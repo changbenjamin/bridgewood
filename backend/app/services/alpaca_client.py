@@ -67,7 +67,9 @@ class BaseBrokerGateway:
     async def get_account_state(self, credentials: AlpacaCredentials) -> AccountState:
         raise NotImplementedError
 
-    async def get_latest_prices(self, credentials: AlpacaCredentials | None, symbols: list[str]) -> dict[str, Decimal]:
+    async def get_latest_prices(
+        self, credentials: AlpacaCredentials | None, symbols: list[str]
+    ) -> dict[str, Decimal]:
         raise NotImplementedError
 
     async def submit_order(
@@ -108,10 +110,16 @@ class MockBrokerGateway(BaseBrokerGateway):
         return self.prices[symbol]
 
     async def get_account_state(self, credentials: AlpacaCredentials) -> AccountState:
-        return AccountState(buying_power=Decimal("1000000.00"), cash=Decimal("1000000.00"))
+        return AccountState(
+            buying_power=Decimal("1000000.00"), cash=Decimal("1000000.00")
+        )
 
-    async def get_latest_prices(self, credentials: AlpacaCredentials | None, symbols: list[str]) -> dict[str, Decimal]:
-        return {normalize_symbol(symbol): self._ensure_price(symbol) for symbol in symbols}
+    async def get_latest_prices(
+        self, credentials: AlpacaCredentials | None, symbols: list[str]
+    ) -> dict[str, Decimal]:
+        return {
+            normalize_symbol(symbol): self._ensure_price(symbol) for symbol in symbols
+        }
 
     async def submit_order(
         self,
@@ -127,6 +135,7 @@ class MockBrokerGateway(BaseBrokerGateway):
         if notional is None and qty is None:
             raise BrokerError("Either notional or qty must be provided.")
         if qty is None:
+            assert notional is not None
             qty = (notional / price).quantize(Decimal("0.000001"))
         filled_total = (qty * price).quantize(PRICE_QUANT)
         await asyncio.sleep(0)
@@ -168,20 +177,38 @@ class RealBrokerGateway(BaseBrokerGateway):
 
     async def get_account_state(self, credentials: AlpacaCredentials) -> AccountState:
         async with httpx.AsyncClient(timeout=15) as client:
-            response = await client.get(f"{credentials.base_url}/v2/account", headers=self._headers(credentials))
+            response = await client.get(
+                f"{credentials.base_url}/v2/account", headers=self._headers(credentials)
+            )
             response.raise_for_status()
         payload = response.json()
         return AccountState(
             buying_power=to_decimal(payload["buying_power"]),
-            cash=to_decimal(payload.get("cash")) if payload.get("cash") is not None else None,
+            cash=(
+                to_decimal(payload.get("cash"))
+                if payload.get("cash") is not None
+                else None
+            ),
         )
 
-    async def get_latest_prices(self, credentials: AlpacaCredentials | None, symbols: list[str]) -> dict[str, Decimal]:
+    async def get_latest_prices(
+        self, credentials: AlpacaCredentials | None, symbols: list[str]
+    ) -> dict[str, Decimal]:
         if credentials is None:
-            raise BrokerError("Market data requires at least one user credential in live mode.")
+            raise BrokerError(
+                "Market data requires at least one user credential in live mode."
+            )
 
-        equities = sorted({normalize_symbol(symbol) for symbol in symbols if not is_crypto_symbol(symbol)})
-        crypto = sorted({normalize_symbol(symbol) for symbol in symbols if is_crypto_symbol(symbol)})
+        equities = sorted(
+            {
+                normalize_symbol(symbol)
+                for symbol in symbols
+                if not is_crypto_symbol(symbol)
+            }
+        )
+        crypto = sorted(
+            {normalize_symbol(symbol) for symbol in symbols if is_crypto_symbol(symbol)}
+        )
         prices: dict[str, Decimal] = {}
 
         async with httpx.AsyncClient(timeout=15) as client:
@@ -189,11 +216,16 @@ class RealBrokerGateway(BaseBrokerGateway):
                 response = await client.get(
                     f"{self._data_url(credentials)}/v2/stocks/trades/latest",
                     headers=self._headers(credentials),
-                    params={"symbols": ",".join(equities), "feed": settings.alpaca_equity_feed},
+                    params={
+                        "symbols": ",".join(equities),
+                        "feed": settings.alpaca_equity_feed,
+                    },
                 )
                 response.raise_for_status()
                 payload = response.json().get("trades", {})
-                prices.update({symbol: to_decimal(data["p"]) for symbol, data in payload.items()})
+                prices.update(
+                    {symbol: to_decimal(data["p"]) for symbol, data in payload.items()}
+                )
 
             if crypto:
                 response = await client.get(
@@ -203,7 +235,9 @@ class RealBrokerGateway(BaseBrokerGateway):
                 )
                 response.raise_for_status()
                 payload = response.json().get("trades", {})
-                prices.update({symbol: to_decimal(data["p"]) for symbol, data in payload.items()})
+                prices.update(
+                    {symbol: to_decimal(data["p"]) for symbol, data in payload.items()}
+                )
 
         return prices
 
@@ -247,8 +281,13 @@ class RealBrokerGateway(BaseBrokerGateway):
 
         return await self.wait_for_fill(credentials, client_order_id)
 
-    async def wait_for_fill(self, credentials: AlpacaCredentials, client_order_id: str) -> OrderFill:
-        attempts = max(int(settings.order_fill_timeout_seconds / settings.order_fill_poll_seconds), 1)
+    async def wait_for_fill(
+        self, credentials: AlpacaCredentials, client_order_id: str
+    ) -> OrderFill:
+        attempts = max(
+            int(settings.order_fill_timeout_seconds / settings.order_fill_poll_seconds),
+            1,
+        )
         async with httpx.AsyncClient(timeout=15) as client:
             for _ in range(attempts):
                 response = await client.get(
@@ -260,9 +299,19 @@ class RealBrokerGateway(BaseBrokerGateway):
                 payload = response.json()
                 status = payload["status"]
                 if status in {"filled", "rejected", "canceled", "expired"}:
-                    qty = to_decimal(payload["filled_qty"]) if payload.get("filled_qty") else None
-                    price = to_decimal(payload["filled_avg_price"]) if payload.get("filled_avg_price") else None
-                    filled_total = (qty * price).quantize(PRICE_QUANT) if qty and price else None
+                    qty = (
+                        to_decimal(payload["filled_qty"])
+                        if payload.get("filled_qty")
+                        else None
+                    )
+                    price = (
+                        to_decimal(payload["filled_avg_price"])
+                        if payload.get("filled_avg_price")
+                        else None
+                    )
+                    filled_total = (
+                        (qty * price).quantize(PRICE_QUANT) if qty and price else None
+                    )
                     return OrderFill(
                         order_id=payload["id"],
                         client_order_id=payload["client_order_id"],
@@ -272,10 +321,15 @@ class RealBrokerGateway(BaseBrokerGateway):
                         quantity=qty,
                         filled_avg_price=price,
                         filled_total=filled_total,
-                        rejection_reason=payload.get("reject_reason") or payload.get("status"),
-                        filled_at=datetime.fromisoformat(payload["filled_at"].replace("Z", "+00:00"))
-                        if payload.get("filled_at")
-                        else datetime.utcnow(),
+                        rejection_reason=payload.get("reject_reason")
+                        or payload.get("status"),
+                        filled_at=(
+                            datetime.fromisoformat(
+                                payload["filled_at"].replace("Z", "+00:00")
+                            )
+                            if payload.get("filled_at")
+                            else datetime.utcnow()
+                        ),
                     )
                 await asyncio.sleep(settings.order_fill_poll_seconds)
         raise BrokerError(f"Timed out waiting for fill for {client_order_id}.")
@@ -287,5 +341,7 @@ _broker_gateway: BaseBrokerGateway | None = None
 def get_broker_gateway() -> BaseBrokerGateway:
     global _broker_gateway
     if _broker_gateway is None:
-        _broker_gateway = MockBrokerGateway() if settings.mock_broker_mode else RealBrokerGateway()
+        _broker_gateway = (
+            MockBrokerGateway() if settings.mock_broker_mode else RealBrokerGateway()
+        )
     return _broker_gateway

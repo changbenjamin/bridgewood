@@ -4,7 +4,7 @@ from collections import defaultdict
 from datetime import datetime
 from decimal import Decimal, ROUND_HALF_UP
 
-from sqlalchemy import Select, func, select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models.entities import Agent, Position, Trade, TradeSide, TradeStatus
@@ -52,12 +52,16 @@ def compute_cash(db: Session, agent: Agent) -> Decimal:
 def get_positions(db: Session, agent_id: str) -> list[Position]:
     return list(
         db.scalars(
-            select(Position).where(Position.agent_id == agent_id).order_by(Position.symbol.asc())
+            select(Position)
+            .where(Position.agent_id == agent_id)
+            .order_by(Position.symbol.asc())
         )
     )
 
 
-def build_portfolio(db: Session, agent: Agent, prices: dict[str, Decimal]) -> PortfolioView:
+def build_portfolio(
+    db: Session, agent: Agent, prices: dict[str, Decimal]
+) -> PortfolioView:
     cash = compute_cash(db, agent)
     holdings = []
     positions = get_positions(db, agent.id)
@@ -121,7 +125,9 @@ def apply_fill_to_position(
         current_qty = Decimal(position.quantity)
         current_avg = Decimal(position.avg_cost_basis)
         new_quantity = shares(current_qty + quantity)
-        new_avg_cost = money(((current_qty * current_avg) + (quantity * price)) / new_quantity)
+        new_avg_cost = money(
+            ((current_qty * current_avg) + (quantity * price)) / new_quantity
+        )
         position.quantity = new_quantity
         position.avg_cost_basis = new_avg_cost
         position.updated_at = datetime.utcnow()
@@ -144,14 +150,18 @@ def apply_fill_to_position(
     return realized_pnl
 
 
-def estimate_sell_quantity(position: Position, amount_dollars: Decimal, price: Decimal) -> Decimal:
+def estimate_sell_quantity(
+    position: Position, amount_dollars: Decimal, price: Decimal
+) -> Decimal:
     max_qty = Decimal(position.quantity)
     if amount_dollars >= max_qty * price:
         return shares(max_qty)
     return shares(amount_dollars / price)
 
 
-def group_prices_by_symbol(agents: list[Agent], positions: list[Position]) -> dict[str, list[str]]:
+def group_prices_by_symbol(
+    agents: list[Agent], positions: list[Position]
+) -> dict[str, list[str]]:
     grouped = defaultdict(list)
     for position in positions:
         grouped[position.symbol].append(position.agent_id)

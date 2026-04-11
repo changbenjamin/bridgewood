@@ -18,16 +18,22 @@ def get_current_agent(
     db: Session = Depends(get_db),
 ) -> Agent:
     if not authorization or not authorization.lower().startswith("bearer "):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing bearer token.")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing bearer token."
+        )
 
     token = authorization.split(" ", 1)[1].strip()
     api_key_hash = hash_api_key(token)
     agent = db.scalar(select(Agent).where(Agent.api_key_hash == api_key_hash))
     if agent is None:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid API key.")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid API key."
+        )
     return agent
 
 
 def require_admin(x_admin_token: str | None = Header(default=None)) -> None:
     if x_admin_token != settings.admin_token:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid admin token.")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid admin token."
+        )

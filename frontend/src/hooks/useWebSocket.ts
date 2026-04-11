@@ -1,52 +1,52 @@
-import { useEffect, useEffectEvent, useRef, useState } from 'react'
+import { useEffect, useEffectEvent, useRef, useState } from "react";
 
 export function useWebSocket<T>(url: string, onMessage: (payload: T) => void) {
-  const [connected, setConnected] = useState(false)
-  const reconnectTimer = useRef<number | null>(null)
+  const [connected, setConnected] = useState(false);
+  const reconnectTimer = useRef<number | null>(null);
 
   const handleMessage = useEffectEvent((payload: T) => {
-    onMessage(payload)
-  })
+    onMessage(payload);
+  });
 
   useEffect(() => {
-    let socket: WebSocket | null = null
-    let cancelled = false
+    let socket: WebSocket | null = null;
+    let cancelled = false;
 
     const connect = () => {
       if (cancelled) {
-        return
+        return;
       }
 
-      socket = new WebSocket(url)
+      socket = new WebSocket(url);
       socket.onopen = () => {
-        setConnected(true)
-        socket?.send('ping')
-      }
+        setConnected(true);
+        socket?.send("ping");
+      };
       socket.onmessage = (event) => {
-        handleMessage(JSON.parse(event.data) as T)
-      }
+        handleMessage(JSON.parse(event.data) as T);
+      };
       socket.onclose = () => {
-        setConnected(false)
+        setConnected(false);
         if (!cancelled) {
-          reconnectTimer.current = window.setTimeout(connect, 2000)
+          reconnectTimer.current = window.setTimeout(connect, 2000);
         }
-      }
+      };
       socket.onerror = () => {
-        socket?.close()
-      }
-    }
+        socket?.close();
+      };
+    };
 
-    connect()
+    connect();
 
     return () => {
-      cancelled = true
-      setConnected(false)
+      cancelled = true;
+      setConnected(false);
       if (reconnectTimer.current) {
-        window.clearTimeout(reconnectTimer.current)
+        window.clearTimeout(reconnectTimer.current);
       }
-      socket?.close()
-    }
-  }, [url])
+      socket?.close();
+    };
+  }, [url]);
 
-  return { connected }
+  return { connected };
 }

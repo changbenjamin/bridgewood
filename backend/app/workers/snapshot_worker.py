@@ -8,8 +8,12 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import select
 
 from app.core.config import get_settings
-from app.models.entities import Agent, BenchmarkSnapshot, BenchmarkState, PortfolioSnapshot
-from app.services.leaderboard import build_leaderboard_payload
+from app.models.entities import (
+    Agent,
+    BenchmarkSnapshot,
+    BenchmarkState,
+    PortfolioSnapshot,
+)
 from app.services.portfolio_engine import build_portfolio
 
 
@@ -26,7 +30,9 @@ def is_market_hours(now: datetime | None = None) -> bool:
 
 
 class SnapshotWorker:
-    def __init__(self, session_factory, price_feed_service, interval_minutes: int) -> None:
+    def __init__(
+        self, session_factory, price_feed_service, interval_minutes: int
+    ) -> None:
         self.session_factory = session_factory
         self.price_feed_service = price_feed_service
         self.interval_minutes = interval_minutes
@@ -65,7 +71,9 @@ class SnapshotWorker:
 
         prices = self.price_feed_service.snapshot()
         with self.session_factory() as db:
-            for agent in db.scalars(select(Agent).order_by(Agent.created_at.asc())).all():
+            for agent in db.scalars(
+                select(Agent).order_by(Agent.created_at.asc())
+            ).all():
                 portfolio = build_portfolio(db, agent, prices)
                 db.add(
                     PortfolioSnapshot(
@@ -82,8 +90,13 @@ class SnapshotWorker:
             if benchmark_state and benchmark_state.symbol in prices:
                 current_price = prices[benchmark_state.symbol]
                 starting_price = Decimal(benchmark_state.starting_price)
-                total_value = Decimal(benchmark_state.starting_cash) * (current_price / starting_price)
-                return_pct = ((total_value - Decimal(benchmark_state.starting_cash)) / Decimal(benchmark_state.starting_cash)) * Decimal("100")
+                total_value = Decimal(benchmark_state.starting_cash) * (
+                    current_price / starting_price
+                )
+                return_pct = (
+                    (total_value - Decimal(benchmark_state.starting_cash))
+                    / Decimal(benchmark_state.starting_cash)
+                ) * Decimal("100")
                 db.add(
                     BenchmarkSnapshot(
                         symbol=benchmark_state.symbol,

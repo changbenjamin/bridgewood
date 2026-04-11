@@ -16,7 +16,12 @@ from app.services.security import decrypt_secret
 
 
 class PriceFeedService:
-    def __init__(self, session_factory, connection_manager: ConnectionManager, refresh_seconds: int) -> None:
+    def __init__(
+        self,
+        session_factory,
+        connection_manager: ConnectionManager,
+        refresh_seconds: int,
+    ) -> None:
         self.session_factory = session_factory
         self.connection_manager = connection_manager
         self.refresh_seconds = refresh_seconds
@@ -46,7 +51,9 @@ class PriceFeedService:
 
     async def refresh_once(self) -> LeaderboardPayload | None:
         with self.session_factory() as db:
-            symbols = {position.symbol for position in db.scalars(select(Position)).all()}
+            symbols = {
+                position.symbol for position in db.scalars(select(Position)).all()
+            }
             benchmark_state = db.get(BenchmarkState, 1)
             if benchmark_state:
                 symbols.add(benchmark_state.symbol)
@@ -63,7 +70,9 @@ class PriceFeedService:
             latest = await self.gateway.get_latest_prices(credentials, sorted(symbols))
             self.prices.update(latest)
             self.last_updated_at = datetime.utcnow()
-            payload = build_leaderboard_payload(db, self.prices, timestamp=self.last_updated_at)
+            payload = build_leaderboard_payload(
+                db, self.prices, timestamp=self.last_updated_at
+            )
 
         await self.connection_manager.broadcast_json(payload.model_dump(mode="json"))
         return payload

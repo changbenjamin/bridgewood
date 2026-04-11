@@ -1,10 +1,10 @@
-@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Instrument+Sans:wght@400;500;600;700&display=swap');
-@import 'tailwindcss';
+@import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Instrument+Sans:wght@400;500;600;700&display=swap");
+@import "tailwindcss";
 
 :root {
   color: #1c1917;
   background: #f9f8f4;
-  font-family: 'Instrument Sans', sans-serif;
+  font-family: "Instrument Sans", sans-serif;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
@@ -23,7 +23,7 @@ body,
 
 body {
   margin: 0;
-  font-family: 'Instrument Sans', sans-serif;
+  font-family: "Instrument Sans", sans-serif;
 }
 
 button,
@@ -36,7 +36,7 @@ textarea {
 code,
 pre,
 .font-mono {
-  font-family: 'IBM Plex Mono', monospace;
+  font-family: "IBM Plex Mono", monospace;
 }
 
 .recharts-tooltip-wrapper {

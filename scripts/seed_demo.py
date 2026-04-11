@@ -8,7 +8,9 @@ import time
 import httpx
 
 
-def create_user(client: httpx.Client, base_url: str, admin_token: str, username: str) -> dict:
+def create_user(
+    client: httpx.Client, base_url: str, admin_token: str, username: str
+) -> dict:
     response = client.post(
         f"{base_url}/v1/users",
         json={
@@ -23,7 +25,9 @@ def create_user(client: httpx.Client, base_url: str, admin_token: str, username:
     return response.json()
 
 
-def create_agent(client: httpx.Client, base_url: str, admin_token: str, user_id: str, name: str) -> dict:
+def create_agent(
+    client: httpx.Client, base_url: str, admin_token: str, user_id: str, name: str
+) -> dict:
     response = client.post(
         f"{base_url}/v1/agents",
         json={
@@ -37,7 +41,14 @@ def create_agent(client: httpx.Client, base_url: str, admin_token: str, user_id:
     return response.json()
 
 
-def submit_cycle(client: httpx.Client, base_url: str, api_key: str, trades: list[dict], rationale: str, cost: float) -> None:
+def submit_cycle(
+    client: httpx.Client,
+    base_url: str,
+    api_key: str,
+    trades: list[dict],
+    rationale: str,
+    cost: float,
+) -> None:
     response = client.post(
         f"{base_url}/v1/trades",
         json={
@@ -51,7 +62,9 @@ def submit_cycle(client: httpx.Client, base_url: str, api_key: str, trades: list
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Seed the app with demo users, agents, and trades.")
+    parser = argparse.ArgumentParser(
+        description="Seed the app with demo users, agents, and trades."
+    )
     parser.add_argument("--base-url", default="http://localhost:8000")
     parser.add_argument("--admin-token", default="bridgewood-admin-token")
     args = parser.parse_args()
@@ -62,17 +75,41 @@ def main() -> None:
         matt = create_user(client, args.base_url, args.admin_token, f"matt-{suffix}")
 
         agents = [
-            create_agent(client, args.base_url, args.admin_token, ben["user_id"], "GPT 5.4"),
-            create_agent(client, args.base_url, args.admin_token, ben["user_id"], "Claude Opus 4.6"),
-            create_agent(client, args.base_url, args.admin_token, matt["user_id"], "Gemini 3.1 Pro"),
+            create_agent(
+                client, args.base_url, args.admin_token, ben["user_id"], "GPT 5.4"
+            ),
+            create_agent(
+                client,
+                args.base_url,
+                args.admin_token,
+                ben["user_id"],
+                "Claude Opus 4.6",
+            ),
+            create_agent(
+                client,
+                args.base_url,
+                args.admin_token,
+                matt["user_id"],
+                "Gemini 3.1 Pro",
+            ),
         ]
 
         orders = [
             (
                 agents[0]["api_key"],
                 [
-                    {"symbol": "AAPL", "side": "buy", "amount_dollars": 600, "client_order_id": f"aapl-{suffix}-1"},
-                    {"symbol": "NVDA", "side": "buy", "amount_dollars": 900, "client_order_id": f"nvda-{suffix}-2"},
+                    {
+                        "symbol": "AAPL",
+                        "side": "buy",
+                        "amount_dollars": 600,
+                        "client_order_id": f"aapl-{suffix}-1",
+                    },
+                    {
+                        "symbol": "NVDA",
+                        "side": "buy",
+                        "amount_dollars": 900,
+                        "client_order_id": f"nvda-{suffix}-2",
+                    },
                 ],
                 "Leaning into liquid large-cap names with strong relative strength.",
                 184.2,
@@ -80,8 +117,18 @@ def main() -> None:
             (
                 agents[1]["api_key"],
                 [
-                    {"symbol": "MSFT", "side": "buy", "amount_dollars": 750, "client_order_id": f"msft-{suffix}-1"},
-                    {"symbol": "META", "side": "buy", "amount_dollars": 520, "client_order_id": f"meta-{suffix}-2"},
+                    {
+                        "symbol": "MSFT",
+                        "side": "buy",
+                        "amount_dollars": 750,
+                        "client_order_id": f"msft-{suffix}-1",
+                    },
+                    {
+                        "symbol": "META",
+                        "side": "buy",
+                        "amount_dollars": 520,
+                        "client_order_id": f"meta-{suffix}-2",
+                    },
                 ],
                 "Favoring software and platform cash flows while keeping dry powder.",
                 146.4,
@@ -89,8 +136,18 @@ def main() -> None:
             (
                 agents[2]["api_key"],
                 [
-                    {"symbol": "TSLA", "side": "buy", "amount_dollars": 700, "client_order_id": f"tsla-{suffix}-1"},
-                    {"symbol": "AAPL", "side": "buy", "amount_dollars": 350, "client_order_id": f"aapl-{suffix}-3"},
+                    {
+                        "symbol": "TSLA",
+                        "side": "buy",
+                        "amount_dollars": 700,
+                        "client_order_id": f"tsla-{suffix}-1",
+                    },
+                    {
+                        "symbol": "AAPL",
+                        "side": "buy",
+                        "amount_dollars": 350,
+                        "client_order_id": f"aapl-{suffix}-3",
+                    },
                 ],
                 "Taking a momentum sleeve with a small quality hedge.",
                 92.8,
@@ -98,7 +155,12 @@ def main() -> None:
             (
                 agents[2]["api_key"],
                 [
-                    {"symbol": "MSFT", "side": "buy", "amount_dollars": 220, "client_order_id": f"msft-{suffix}-3"},
+                    {
+                        "symbol": "MSFT",
+                        "side": "buy",
+                        "amount_dollars": 220,
+                        "client_order_id": f"msft-{suffix}-3",
+                    },
                 ],
                 "Adding a small software position after the initial momentum sleeve.",
                 31.2,

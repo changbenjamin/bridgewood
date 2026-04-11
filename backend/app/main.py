@@ -20,8 +20,12 @@ settings = get_settings()
 async def lifespan(app: FastAPI):
     init_db()
     connection_manager = ConnectionManager()
-    price_feed_service = PriceFeedService(SessionLocal, connection_manager, settings.price_refresh_seconds)
-    snapshot_worker = SnapshotWorker(SessionLocal, price_feed_service, settings.snapshot_interval_minutes)
+    price_feed_service = PriceFeedService(
+        SessionLocal, connection_manager, settings.price_refresh_seconds
+    )
+    snapshot_worker = SnapshotWorker(
+        SessionLocal, price_feed_service, settings.snapshot_interval_minutes
+    )
 
     app.state.connection_manager = connection_manager
     app.state.price_feed_service = price_feed_service
