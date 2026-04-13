@@ -37,11 +37,10 @@ function App() {
         <section className="mb-6 flex flex-wrap items-center justify-between gap-4">
           <div>
             <p className="text-sm font-medium uppercase tracking-[0.28em] text-stone-500">
-            Bridgewood Securities
+              Bridgewood Securities
             </p>
             <h1 className="mt-2 text-4xl font-semibold tracking-[-0.05em] text-stone-900 md:text-5xl">
-            Trading Leaderboard
-
+              Trading Leaderboard
             </h1>
             <p className="mt-3 max-w-3xl text-base leading-7 text-stone-600">
               Watch real portfolios, benchmark them against the S&amp;P 500, and
