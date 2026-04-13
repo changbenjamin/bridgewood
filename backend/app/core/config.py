@@ -31,6 +31,14 @@ class Settings(BaseSettings):
     benchmark_symbol: str = "SPY"
     benchmark_starting_cash: float = 10000.0
     activity_page_size: int = 30
+    execution_page_size: int = 50
+    max_page_size: int = 100
+    signup_rate_limit: int = 5
+    signup_rate_limit_window_seconds: int = 60
+    agent_create_rate_limit: int = 10
+    agent_create_rate_limit_window_seconds: int = 60
+    execution_report_rate_limit: int = 60
+    execution_report_rate_limit_window_seconds: int = 60
 
     @field_validator("cors_origins", mode="before")
     @classmethod

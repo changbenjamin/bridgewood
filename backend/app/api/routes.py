@@ -6,24 +6,28 @@ from typing import Literal
 from fastapi import (
     APIRouter,
     Depends,
-    HTTPException,
     Query,
     Request,
     WebSocket,
     WebSocketDisconnect,
     status,
 )
-from sqlalchemy import select
+from sqlalchemy import and_, delete, or_, select
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_account_user, get_current_agent
 from app.core.config import get_settings
+from app.core.errors import BridgewoodError
+from app.core.pagination import PageCursor, decode_cursor, encode_cursor
+from app.core.time import utc_now
 from app.db.session import get_db
 from app.models.entities import (
     Agent,
     BenchmarkState,
     Execution,
     ExecutionSide,
+    PortfolioSnapshot,
+    Position,
     TradingMode,
     User,
 )
@@ -33,10 +37,16 @@ from app.schemas.api import (
     AccountIdentity,
     AccountOverview,
     ActivityItem,
+    ActivityPage,
     ActivityPayload,
     AgentCreateResponse,
+    AgentDeactivationResponse,
     AgentIdentity,
+    AgentKeyRotationResponse,
+    AgentResetResponse,
     DashboardBootstrap,
+    ExecutionListItem,
+    ExecutionPage,
     ExecutionReportRequest,
     ExecutionReportResponse,
     ExecutionResult,
@@ -72,12 +82,6 @@ def _display_name(agent: Agent) -> str:
     return f"{agent.name}{' *' if agent.is_paper else ''}"
 
 
-def _decimal_to_float(value: Decimal | None) -> float | None:
-    if value is None:
-        return None
-    return float(value)
-
-
 def _format_decimal(value: Decimal) -> str:
     text = format(value.normalize(), "f")
     if "." in text:
@@ -101,6 +105,7 @@ def _build_execution_metadata(execution: Execution) -> dict[str, str | float]:
         "price_per_share": float(execution.price_per_share),
         "gross_notional": float(execution.gross_notional),
         "fees": float(execution.fees),
+        "realized_pnl": float(execution.realized_pnl),
         "executed_at": execution.executed_at.isoformat(),
     }
 
@@ -121,6 +126,8 @@ def _build_account_agent_summary(agent: Agent) -> AccountAgentSummary:
         starting_cash=float(agent.starting_cash),
         api_key_prefix=agent.api_key_prefix,
         trading_mode=agent.trading_mode.value,
+        is_active=agent.is_active,
+        deactivated_at=agent.deactivated_at,
         created_at=agent.created_at,
     )
 
@@ -133,6 +140,8 @@ def _build_agent_identity(agent: Agent) -> AgentIdentity:
         icon_url=agent.icon_url,
         starting_cash=float(agent.starting_cash),
         trading_mode=agent.trading_mode.value,
+        is_active=agent.is_active,
+        deactivated_at=agent.deactivated_at,
     )
 
 
@@ -150,6 +159,22 @@ def _build_execution_result(
         gross_notional=float(execution.gross_notional),
         fees=float(execution.fees),
         executed_at=execution.executed_at,
+    )
+
+
+def _build_execution_item(execution: Execution) -> ExecutionListItem:
+    return ExecutionListItem(
+        id=execution.id,
+        external_order_id=execution.external_order_id,
+        symbol=execution.symbol,
+        side=execution.side.value,
+        quantity=float(execution.quantity),
+        price_per_share=float(execution.price_per_share),
+        gross_notional=float(execution.gross_notional),
+        fees=float(execution.fees),
+        realized_pnl=float(execution.realized_pnl),
+        executed_at=execution.executed_at,
+        created_at=execution.created_at,
     )
 
 
@@ -214,6 +239,101 @@ def _create_agent_record(
     return agent, api_key
 
 
+def _agent_for_account(db: Session, *, account: User, agent_id: str) -> Agent:
+    agent = db.scalar(
+        select(Agent).where(Agent.user_id == account.id, Agent.id == agent_id)
+    )
+    if agent is None:
+        raise BridgewoodError(
+            status_code=404,
+            detail="Agent not found.",
+            code="AGENT_NOT_FOUND",
+        )
+    return agent
+
+
+def _execution_cursor_filter(cursor: PageCursor):
+    return or_(
+        Execution.executed_at < cursor.executed_at,
+        and_(
+            Execution.executed_at == cursor.executed_at,
+            Execution.created_at < cursor.created_at,
+        ),
+        and_(
+            Execution.executed_at == cursor.executed_at,
+            Execution.created_at == cursor.created_at,
+            Execution.id < cursor.row_id,
+        ),
+    )
+
+
+def _paginate_activity(
+    db: Session, *, limit: int, cursor: str | None = None
+) -> ActivityPage:
+    query = (
+        select(Execution, Agent)
+        .join(Agent, Agent.id == Execution.agent_id)
+        .where(Agent.is_active.is_(True))
+        .order_by(
+            Execution.executed_at.desc(),
+            Execution.created_at.desc(),
+            Execution.id.desc(),
+        )
+    )
+    if cursor:
+        query = query.where(_execution_cursor_filter(decode_cursor(cursor)))
+
+    rows = list(db.execute(query.limit(limit + 1)).all())
+    page_rows = rows[:limit]
+    next_cursor = None
+    if len(rows) > limit and page_rows:
+        execution, _agent = page_rows[-1]
+        next_cursor = encode_cursor(
+            executed_at=execution.executed_at,
+            created_at=execution.created_at,
+            row_id=execution.id,
+        )
+
+    return ActivityPage(
+        items=[
+            _build_activity_item(execution, agent) for execution, agent in page_rows
+        ],
+        next_cursor=next_cursor,
+    )
+
+
+def _paginate_executions(
+    db: Session, *, agent_id: str, limit: int, cursor: str | None = None
+) -> ExecutionPage:
+    query = (
+        select(Execution)
+        .where(Execution.agent_id == agent_id)
+        .order_by(
+            Execution.executed_at.desc(),
+            Execution.created_at.desc(),
+            Execution.id.desc(),
+        )
+    )
+    if cursor:
+        query = query.where(_execution_cursor_filter(decode_cursor(cursor)))
+
+    rows = list(db.scalars(query.limit(limit + 1)).all())
+    page_rows = rows[:limit]
+    next_cursor = None
+    if len(rows) > limit and page_rows:
+        execution = page_rows[-1]
+        next_cursor = encode_cursor(
+            executed_at=execution.executed_at,
+            created_at=execution.created_at,
+            row_id=execution.id,
+        )
+
+    return ExecutionPage(
+        items=[_build_execution_item(execution) for execution in page_rows],
+        next_cursor=next_cursor,
+    )
+
+
 async def _ensure_benchmark_initialized(request: Request, db: Session) -> None:
     state = db.get(BenchmarkState, 1)
     if state is not None:
@@ -238,13 +358,29 @@ async def _ensure_benchmark_initialized(request: Request, db: Session) -> None:
     db.commit()
 
 
+async def _broadcast_cached_leaderboard(request: Request, db: Session) -> None:
+    prices = request.app.state.price_feed_service.snapshot()
+    payload = build_leaderboard_payload(db, prices, timestamp=utc_now())
+    await request.app.state.connection_manager.broadcast_json(
+        payload.model_dump(mode="json")
+    )
+
+
+async def _apply_rate_limit(
+    request: Request, *, scope: str, key: str, detail: str
+) -> None:
+    await request.app.state.rate_limiter.check(scope, key, detail=detail)
+
+
 @router.get("/health")
-async def healthcheck() -> dict[str, str | bool]:
+async def healthcheck(request: Request) -> dict[str, object]:
+    price_feed_health = request.app.state.price_feed_service.health_summary()
+    snapshot_health = request.app.state.snapshot_worker.health_summary()
+    healthy = bool(price_feed_health["healthy"]) and bool(snapshot_health["healthy"])
     return {
-        "status": "ok",
-        "market_data_configured": bool(
-            settings.alpaca_api_key and settings.alpaca_secret_key
-        ),
+        "status": "ok" if healthy else "degraded",
+        "market_data": price_feed_health,
+        "snapshots": snapshot_health,
     }
 
 
@@ -256,10 +392,19 @@ async def signup(
     request: Request,
     db: Session = Depends(get_db),
 ) -> SignupResponse:
+    client_host = request.client.host if request.client else "unknown"
+    await _apply_rate_limit(
+        request,
+        scope="signup",
+        key=client_host,
+        detail="Too many signup attempts. Please try again soon.",
+    )
+
     if db.scalar(select(User).where(User.username == payload.username)):
-        raise HTTPException(
+        raise BridgewoodError(
             status_code=status.HTTP_409_CONFLICT,
             detail="Username already exists.",
+            code="USERNAME_EXISTS",
         )
 
     user, account_api_key = _create_user_record(db=db, username=payload.username)
@@ -316,6 +461,13 @@ async def create_account_agent(
     account: User = Depends(get_current_account_user),
     db: Session = Depends(get_db),
 ) -> AgentCreateResponse:
+    await _apply_rate_limit(
+        request,
+        scope="agent_create",
+        key=account.id,
+        detail="Too many agent creation requests. Please try again soon.",
+    )
+
     agent, api_key = _create_agent_record(
         db=db,
         user=account,
@@ -333,6 +485,96 @@ async def create_account_agent(
         starting_cash=float(agent.starting_cash),
         trading_mode=agent.trading_mode.value,
         icon_url=agent.icon_url,
+        is_active=agent.is_active,
+        deactivated_at=agent.deactivated_at,
+    )
+
+
+@router.post(
+    "/account/agents/{agent_id}/rotate-key",
+    response_model=AgentKeyRotationResponse,
+)
+async def rotate_agent_key(
+    agent_id: str,
+    account: User = Depends(get_current_account_user),
+    db: Session = Depends(get_db),
+) -> AgentKeyRotationResponse:
+    agent = _agent_for_account(db, account=account, agent_id=agent_id)
+    api_key = generate_agent_api_key()
+    rotated_at = utc_now()
+
+    agent.api_key_hash = hash_api_key(api_key)
+    agent.api_key_prefix = api_key[:10]
+    db.commit()
+    db.refresh(agent)
+
+    return AgentKeyRotationResponse(
+        agent_id=agent.id,
+        name=agent.name,
+        api_key=api_key,
+        api_key_prefix=agent.api_key_prefix,
+        rotated_at=rotated_at,
+    )
+
+
+@router.post(
+    "/account/agents/{agent_id}/reset",
+    response_model=AgentResetResponse,
+)
+async def reset_agent(
+    agent_id: str,
+    request: Request,
+    account: User = Depends(get_current_account_user),
+    db: Session = Depends(get_db),
+) -> AgentResetResponse:
+    agent = _agent_for_account(db, account=account, agent_id=agent_id)
+    deleted_executions = (
+        db.execute(delete(Execution).where(Execution.agent_id == agent.id)).rowcount
+        or 0
+    )
+    deleted_positions = (
+        db.execute(delete(Position).where(Position.agent_id == agent.id)).rowcount or 0
+    )
+    deleted_snapshots = (
+        db.execute(
+            delete(PortfolioSnapshot).where(PortfolioSnapshot.agent_id == agent.id)
+        ).rowcount
+        or 0
+    )
+    db.commit()
+
+    await _broadcast_cached_leaderboard(request, db)
+    return AgentResetResponse(
+        agent_id=agent.id,
+        reset_at=utc_now(),
+        deleted_executions=deleted_executions,
+        deleted_positions=deleted_positions,
+        deleted_snapshots=deleted_snapshots,
+    )
+
+
+@router.post(
+    "/account/agents/{agent_id}/deactivate",
+    response_model=AgentDeactivationResponse,
+)
+async def deactivate_agent(
+    agent_id: str,
+    request: Request,
+    account: User = Depends(get_current_account_user),
+    db: Session = Depends(get_db),
+) -> AgentDeactivationResponse:
+    agent = _agent_for_account(db, account=account, agent_id=agent_id)
+    if agent.is_active:
+        agent.is_active = False
+        agent.deactivated_at = utc_now()
+        db.commit()
+        db.refresh(agent)
+        await _broadcast_cached_leaderboard(request, db)
+
+    return AgentDeactivationResponse(
+        agent_id=agent.id,
+        is_active=agent.is_active,
+        deactivated_at=agent.deactivated_at,
     )
 
 
@@ -352,6 +594,18 @@ async def get_portfolio(
         await request.app.state.price_feed_service.refresh_once()
         prices = request.app.state.price_feed_service.snapshot()
     return build_portfolio(db, agent, prices)
+
+
+@router.get("/executions", response_model=ExecutionPage)
+async def get_executions(
+    limit: int = Query(
+        default=settings.execution_page_size, ge=1, le=settings.max_page_size
+    ),
+    cursor: str | None = Query(default=None),
+    agent: Agent = Depends(get_current_agent),
+    db: Session = Depends(get_db),
+) -> ExecutionPage:
+    return _paginate_executions(db, agent_id=agent.id, limit=limit, cursor=cursor)
 
 
 @router.get("/prices", response_model=PricesResponse)
@@ -386,30 +640,46 @@ async def report_executions(
     agent: Agent = Depends(get_current_agent),
     db: Session = Depends(get_db),
 ) -> ExecutionReportResponse:
+    await _apply_rate_limit(
+        request,
+        scope="execution_report",
+        key=agent.id,
+        detail="Too many execution reports. Please try again soon.",
+    )
+
     seen_external_ids: set[str] = set()
     result_by_external_id: dict[str, ExecutionResult] = {}
-    new_executions = []
 
     for execution in payload.executions:
         if execution.external_order_id in seen_external_ids:
-            raise HTTPException(
+            raise BridgewoodError(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Duplicate external_order_id in request.",
+                code="DUPLICATE_EXTERNAL_ORDER_ID",
             )
         seen_external_ids.add(execution.external_order_id)
 
-        existing = db.scalar(
+    external_ids = [execution.external_order_id for execution in payload.executions]
+    existing_models = list(
+        db.scalars(
             select(Execution).where(
                 Execution.agent_id == agent.id,
-                Execution.external_order_id == execution.external_order_id,
+                Execution.external_order_id.in_(external_ids),
             )
         )
+    )
+    existing_by_external_id = {
+        execution.external_order_id: execution for execution in existing_models
+    }
+
+    new_executions = []
+    for execution in payload.executions:
+        existing = existing_by_external_id.get(execution.external_order_id)
         if existing is not None:
             result_by_external_id[execution.external_order_id] = (
                 _build_execution_result(existing, status_value="duplicate")
             )
             continue
-
         new_executions.append(execution)
 
     recorded_models: list[Execution] = []
@@ -450,14 +720,13 @@ async def report_executions(
             )
 
         db.commit()
-    except ValueError as exc:
+    except BridgewoodError:
         db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
-        ) from exc
+        raise
+    except Exception:
+        db.rollback()
+        raise
 
-    await _ensure_benchmark_initialized(request, db)
-    await request.app.state.price_feed_service.refresh_once()
     prices = request.app.state.price_feed_service.snapshot()
     portfolio = build_portfolio(db, agent, prices)
 
@@ -486,17 +755,15 @@ async def get_leaderboard(
     )
 
 
-@router.get("/activity", response_model=list[ActivityItem])
-async def get_activity(db: Session = Depends(get_db)) -> list[ActivityItem]:
-    rows = list(
-        db.execute(
-            select(Execution, Agent)
-            .join(Agent, Agent.id == Execution.agent_id)
-            .order_by(Execution.executed_at.desc(), Execution.created_at.desc())
-            .limit(settings.activity_page_size)
-        ).all()
-    )
-    return [_build_activity_item(execution, agent) for execution, agent in rows]
+@router.get("/activity", response_model=ActivityPage)
+async def get_activity(
+    limit: int = Query(
+        default=settings.activity_page_size, ge=1, le=settings.max_page_size
+    ),
+    cursor: str | None = Query(default=None),
+    db: Session = Depends(get_db),
+) -> ActivityPage:
+    return _paginate_activity(db, limit=limit, cursor=cursor)
 
 
 @router.get("/snapshots", response_model=list[SnapshotPoint])
@@ -518,7 +785,7 @@ async def get_dashboard(
     leaderboard = build_leaderboard_payload(
         db, request.app.state.price_feed_service.snapshot()
     )
-    activity = await get_activity(db)
+    activity = _paginate_activity(db, limit=settings.activity_page_size).items
     snapshots = build_snapshot_series(db, range)
     return DashboardBootstrap(
         leaderboard=leaderboard, activity=activity, snapshots=snapshots, range=range

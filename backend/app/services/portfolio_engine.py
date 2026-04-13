@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from datetime import datetime
 from decimal import Decimal, ROUND_HALF_UP
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.core.errors import BridgewoodError
+from app.core.time import utc_now
 from app.models.entities import Agent, Execution, ExecutionSide, Position
 from app.schemas.api import PortfolioView, PositionView
 
@@ -136,7 +137,7 @@ def apply_execution_to_position(
                 symbol=symbol,
                 quantity=quantity_value(quantity),
                 avg_cost_basis=price_value(price),
-                updated_at=datetime.utcnow(),
+                updated_at=utc_now(),
             )
             db.add(position)
             return realized_pnl
@@ -149,15 +150,23 @@ def apply_execution_to_position(
         )
         position.quantity = new_quantity
         position.avg_cost_basis = new_avg_cost
-        position.updated_at = datetime.utcnow()
+        position.updated_at = utc_now()
         return realized_pnl
 
     if position is None or Decimal(position.quantity) <= Decimal("0"):
-        raise ValueError(f"No position available to sell for {symbol}.")
+        raise BridgewoodError(
+            status_code=400,
+            detail=f"No position available to sell for {symbol}.",
+            code="NO_POSITION",
+        )
 
     current_qty = Decimal(position.quantity)
     if quantity > current_qty + QUANTITY:
-        raise ValueError(f"Insufficient quantity to sell {quantity} {symbol}.")
+        raise BridgewoodError(
+            status_code=400,
+            detail=f"Insufficient quantity to sell {quantity} {symbol}.",
+            code="INSUFFICIENT_POSITION",
+        )
 
     realized_pnl = money(((price - Decimal(position.avg_cost_basis)) * quantity) - fees)
     remaining = quantity_value(max(current_qty - quantity, Decimal("0")))
@@ -165,5 +174,5 @@ def apply_execution_to_position(
         db.delete(position)
     else:
         position.quantity = remaining
-        position.updated_at = datetime.utcnow()
+        position.updated_at = utc_now()
     return realized_pnl

@@ -6,16 +6,18 @@ from decimal import Decimal
 from enum import Enum
 
 from sqlalchemy import (
-    DateTime,
     Enum as SqlEnum,
     ForeignKey,
     Numeric,
     String,
+    Boolean,
     UniqueConstraint,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.session import Base
+from app.db.types import UTCDateTime
+from app.core.time import utc_now
 
 
 class TradingMode(str, Enum):
@@ -42,7 +44,7 @@ class User(Base):
     )
     account_api_key_prefix: Mapped[str] = mapped_column(String(16), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.utcnow, nullable=False
+        UTCDateTime(), default=utc_now, nullable=False
     )
 
     agents: Mapped[list["Agent"]] = relationship(back_populates="user")
@@ -63,8 +65,10 @@ class Agent(Base):
     trading_mode: Mapped[TradingMode] = mapped_column(
         SqlEnum(TradingMode), nullable=False, default=TradingMode.PAPER
     )
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    deactivated_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.utcnow, nullable=False
+        UTCDateTime(), default=utc_now, nullable=False
     )
 
     user: Mapped[User] = relationship(back_populates="agents")
@@ -100,9 +104,11 @@ class Execution(Base):
     realized_pnl: Mapped[Decimal] = mapped_column(
         Numeric(18, 6), nullable=False, default=0
     )
-    executed_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+    executed_at: Mapped[datetime] = mapped_column(
+        UTCDateTime(), nullable=False, index=True
+    )
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.utcnow, nullable=False, index=True
+        UTCDateTime(), default=utc_now, nullable=False, index=True
     )
 
     agent: Mapped[Agent] = relationship(back_populates="executions")
@@ -121,7 +127,7 @@ class Position(Base):
     quantity: Mapped[Decimal] = mapped_column(Numeric(18, 9), nullable=False)
     avg_cost_basis: Mapped[Decimal] = mapped_column(Numeric(18, 6), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.utcnow, nullable=False
+        UTCDateTime(), default=utc_now, nullable=False
     )
 
     agent: Mapped[Agent] = relationship(back_populates="positions")
@@ -138,7 +144,9 @@ class PortfolioSnapshot(Base):
     cash: Mapped[Decimal] = mapped_column(Numeric(18, 6), nullable=False)
     pnl: Mapped[Decimal] = mapped_column(Numeric(18, 6), nullable=False)
     return_pct: Mapped[Decimal] = mapped_column(Numeric(18, 6), nullable=False)
-    snapshot_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+    snapshot_at: Mapped[datetime] = mapped_column(
+        UTCDateTime(), nullable=False, index=True
+    )
 
 
 class BenchmarkState(Base):
@@ -149,7 +157,7 @@ class BenchmarkState(Base):
     starting_cash: Mapped[Decimal] = mapped_column(Numeric(18, 6), nullable=False)
     starting_price: Mapped[Decimal] = mapped_column(Numeric(18, 6), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.utcnow, nullable=False
+        UTCDateTime(), default=utc_now, nullable=False
     )
 
 
@@ -160,4 +168,6 @@ class BenchmarkSnapshot(Base):
     symbol: Mapped[str] = mapped_column(String(32), nullable=False)
     total_value: Mapped[Decimal] = mapped_column(Numeric(18, 6), nullable=False)
     return_pct: Mapped[Decimal] = mapped_column(Numeric(18, 6), nullable=False)
-    snapshot_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+    snapshot_at: Mapped[datetime] = mapped_column(
+        UTCDateTime(), nullable=False, index=True
+    )

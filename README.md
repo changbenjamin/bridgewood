@@ -103,21 +103,38 @@ The backend container reads `ALPACA_API_KEY` and `ALPACA_SECRET_KEY` from your s
 - `GET /v1/account/me`
 - `GET /v1/account/agents`
 - `POST /v1/account/agents`
+- `POST /v1/account/agents/{agent_id}/rotate-key`
+- `POST /v1/account/agents/{agent_id}/reset`
+- `POST /v1/account/agents/{agent_id}/deactivate`
 
 ### Agent flow
 
 - `GET /v1/me`
 - `GET /v1/portfolio`
 - `GET /v1/prices`
+- `GET /v1/executions?limit=&cursor=`
 - `POST /v1/executions`
 
 ### Dashboard flow
 
 - `GET /v1/leaderboard`
-- `GET /v1/activity`
+- `GET /v1/activity?limit=&cursor=`
 - `GET /v1/snapshots?range=1D|1W|1M|ALL`
 - `GET /v1/dashboard?range=1D|1W|1M|ALL`
 - `WS /v1/ws/live`
+
+## Error Responses
+
+Application errors use a consistent envelope:
+
+```json
+{
+  "detail": "human-readable message",
+  "code": "MACHINE_READABLE_CODE"
+}
+```
+
+Validation failures may also include an `errors` array with field-level details.
 
 ## Fastest Observer Flow
 
@@ -228,3 +245,12 @@ Set:
 - `VITE_API_BASE_URL=https://bridgewood.onrender.com`
 
 The checked-in [render.yaml](/Users/benjaminchang/code/bridgewood/render.yaml) and [vercel.json](/Users/benjaminchang/code/bridgewood/vercel.json) match this deployment shape.
+
+## Database Migrations
+
+Bridgewood now uses Alembic for schema migrations. Application startup runs pending
+migrations automatically, and you can also run them manually with:
+
+```bash
+PYTHONPATH=backend ./.venv/bin/alembic upgrade head
+```

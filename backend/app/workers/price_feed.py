@@ -1,17 +1,22 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from datetime import datetime
 from decimal import Decimal
 
 from sqlalchemy import select
 
 from app.core.config import get_settings
-from app.models.entities import Position
+from app.core.time import utc_now
+from app.models.entities import Agent, Position
 from app.schemas.api import LeaderboardPayload
 from app.services.broadcaster import ConnectionManager
 from app.services.leaderboard import build_leaderboard_payload
 from app.services.market_data import MarketDataClient, MarketDataError
+
+
+logger = logging.getLogger(__name__)
 
 
 class PriceFeedService:
@@ -26,7 +31,11 @@ class PriceFeedService:
         self.refresh_seconds = refresh_seconds
         self.market_data = MarketDataClient()
         self.prices: dict[str, Decimal] = {}
-        self.last_updated_at: datetime = datetime.utcnow()
+        self.last_updated_at: datetime = utc_now()
+        self.last_success_at: datetime | None = None
+        self.last_error_at: datetime | None = None
+        self.last_error_message: str | None = None
+        self.consecutive_failures = 0
         self._task: asyncio.Task | None = None
         self.settings = get_settings()
 
@@ -48,21 +57,69 @@ class PriceFeedService:
     def as_float_map(self) -> dict[str, float]:
         return {symbol: float(price) for symbol, price in self.prices.items()}
 
+    def _record_success(self) -> None:
+        self.last_updated_at = utc_now()
+        self.last_success_at = self.last_updated_at
+        self.last_error_at = None
+        self.last_error_message = None
+        self.consecutive_failures = 0
+
+    def _record_error(self, exc: Exception) -> None:
+        self.last_error_at = utc_now()
+        self.last_error_message = str(exc)
+        self.consecutive_failures += 1
+
+    def health_summary(self) -> dict[str, object]:
+        configured = bool(
+            self.settings.alpaca_api_key and self.settings.alpaca_secret_key
+        )
+        age_seconds = None
+        healthy = configured and self.last_success_at is not None
+        if self.last_success_at is not None:
+            age_seconds = (utc_now() - self.last_success_at).total_seconds()
+        if self.last_success_at and self.last_error_at:
+            healthy = self.last_success_at >= self.last_error_at
+        if healthy and self.last_success_at is not None:
+            if age_seconds is not None and age_seconds > max(
+                60, self.refresh_seconds * 4
+            ):
+                healthy = False
+
+        return {
+            "configured": configured,
+            "healthy": healthy,
+            "last_success_at": self.last_success_at,
+            "last_error_at": self.last_error_at,
+            "last_error_message": self.last_error_message,
+            "last_updated_at": self.last_updated_at,
+            "stale_seconds": age_seconds,
+            "consecutive_failures": self.consecutive_failures,
+        }
+
     async def refresh_symbols(self, symbols: list[str]) -> dict[str, Decimal]:
         try:
             latest = await self.market_data.get_latest_prices(symbols)
-        except (MarketDataError, Exception):
+        except (MarketDataError, Exception) as exc:
+            self._record_error(exc)
+            logger.exception(
+                "Market data refresh failed for symbols: %s", symbols, exc_info=exc
+            )
             return {}
 
         if latest:
             self.prices.update(latest)
-            self.last_updated_at = datetime.utcnow()
+            self._record_success()
         return latest
 
     async def refresh_once(self) -> LeaderboardPayload:
         with self.session_factory() as db:
             symbols = {
-                position.symbol for position in db.scalars(select(Position)).all()
+                position.symbol
+                for position in db.scalars(
+                    select(Position)
+                    .join(Agent, Agent.id == Position.agent_id)
+                    .where(Agent.is_active.is_(True))
+                ).all()
             }
             symbols.add(self.settings.benchmark_symbol)
 
@@ -80,6 +137,7 @@ class PriceFeedService:
         while True:
             try:
                 await self.refresh_once()
-            except Exception:
-                pass
+            except Exception as exc:  # pragma: no cover - background safety
+                self._record_error(exc)
+                logger.exception("Price feed loop failed.", exc_info=exc)
             await asyncio.sleep(self.refresh_seconds)

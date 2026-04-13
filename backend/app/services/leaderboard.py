@@ -9,6 +9,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.core.time import utc_now
 from app.models.entities import (
     Agent,
     BenchmarkSnapshot,
@@ -41,7 +42,7 @@ def _display_name(agent: Agent) -> str:
 
 
 def get_daily_change_pct(db: Session, agent: Agent) -> float:
-    cutoff = datetime.utcnow() - timedelta(days=2)
+    cutoff = utc_now() - timedelta(days=2)
     snapshots = list(
         db.scalars(
             select(PortfolioSnapshot)
@@ -101,8 +102,14 @@ def compute_sharpe(db: Session, agent_id: str) -> float:
 def build_leaderboard_payload(
     db: Session, prices: dict[str, Decimal], *, timestamp: datetime | None = None
 ) -> LeaderboardPayload:
-    timestamp = timestamp or datetime.utcnow()
-    agents = list(db.scalars(select(Agent).order_by(Agent.created_at.asc())))
+    timestamp = timestamp or utc_now()
+    agents = list(
+        db.scalars(
+            select(Agent)
+            .where(Agent.is_active.is_(True))
+            .order_by(Agent.created_at.asc())
+        )
+    )
     entries: list[LeaderboardEntry] = []
 
     for agent in agents:
@@ -175,7 +182,7 @@ def build_leaderboard_payload(
 
 
 def build_snapshot_series(db: Session, range_key: str) -> list[SnapshotPoint]:
-    now = datetime.utcnow()
+    now = utc_now()
     lookback: datetime | None = None
     if range_key == "1D":
         lookback = now - timedelta(days=1)
@@ -184,8 +191,10 @@ def build_snapshot_series(db: Session, range_key: str) -> list[SnapshotPoint]:
     elif range_key == "1M":
         lookback = now - timedelta(days=30)
 
-    snapshots_query = select(PortfolioSnapshot, Agent).join(
-        Agent, Agent.id == PortfolioSnapshot.agent_id
+    snapshots_query = (
+        select(PortfolioSnapshot, Agent)
+        .join(Agent, Agent.id == PortfolioSnapshot.agent_id)
+        .where(Agent.is_active.is_(True))
     )
     benchmark_query = select(BenchmarkSnapshot)
     if lookback is not None:

@@ -7,8 +7,10 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes import router
 from app.core.config import get_settings
+from app.core.errors import register_exception_handlers
 from app.db.session import SessionLocal, init_db
 from app.services.broadcaster import ConnectionManager
+from app.services.rate_limit import InMemoryRateLimiter
 from app.workers.price_feed import PriceFeedService
 from app.workers.snapshot_worker import SnapshotWorker
 
@@ -26,10 +28,27 @@ async def lifespan(app: FastAPI):
     snapshot_worker = SnapshotWorker(
         SessionLocal, price_feed_service, settings.snapshot_interval_minutes
     )
+    rate_limiter = InMemoryRateLimiter(
+        {
+            "signup": (
+                settings.signup_rate_limit,
+                settings.signup_rate_limit_window_seconds,
+            ),
+            "agent_create": (
+                settings.agent_create_rate_limit,
+                settings.agent_create_rate_limit_window_seconds,
+            ),
+            "execution_report": (
+                settings.execution_report_rate_limit,
+                settings.execution_report_rate_limit_window_seconds,
+            ),
+        }
+    )
 
     app.state.connection_manager = connection_manager
     app.state.price_feed_service = price_feed_service
     app.state.snapshot_worker = snapshot_worker
+    app.state.rate_limiter = rate_limiter
 
     price_feed_service.start()
     snapshot_worker.start()
@@ -41,6 +60,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title=settings.app_name, lifespan=lifespan)
+register_exception_handlers(app)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,

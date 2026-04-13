@@ -1,16 +1,30 @@
 from __future__ import annotations
 
-from datetime import datetime
-from typing import Literal, TypeAlias
+import re
+from datetime import datetime, timedelta
+from typing import Any, Literal, TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from app.core.time import normalize_utc, utc_now
+
 
 SnapshotRange: TypeAlias = Literal["1D", "1W", "1M", "ALL"]
+SYMBOL_PATTERN = re.compile(r"^[A-Z0-9][A-Z0-9./_-]{0,31}$")
+MAX_EXECUTION_QUANTITY = 10_000_000
+MAX_EXECUTION_PRICE = 1_000_000
+MAX_EXECUTION_FEES = 1_000_000
+MAX_FUTURE_SKEW = timedelta(seconds=30)
 
 
 class APIModel(BaseModel):
     model_config = ConfigDict(from_attributes=True)
+
+
+class ErrorResponse(APIModel):
+    detail: str
+    code: str
+    errors: list[dict[str, Any]] | None = None
 
 
 class SignupRequest(APIModel):
@@ -55,6 +69,8 @@ class AgentCreateResponse(APIModel):
     starting_cash: float
     trading_mode: Literal["paper", "live"]
     icon_url: str | None = None
+    is_active: bool = True
+    deactivated_at: datetime | None = None
 
 
 class AccountAgentSummary(APIModel):
@@ -64,6 +80,8 @@ class AccountAgentSummary(APIModel):
     starting_cash: float
     api_key_prefix: str
     trading_mode: Literal["paper", "live"]
+    is_active: bool
+    deactivated_at: datetime | None = None
     created_at: datetime
 
 
@@ -85,15 +103,39 @@ class AgentIdentity(APIModel):
     icon_url: str | None = None
     starting_cash: float
     trading_mode: Literal["paper", "live"]
+    is_active: bool
+    deactivated_at: datetime | None = None
+
+
+class AgentKeyRotationResponse(APIModel):
+    agent_id: str
+    name: str
+    api_key: str
+    api_key_prefix: str
+    rotated_at: datetime
+
+
+class AgentDeactivationResponse(APIModel):
+    agent_id: str
+    is_active: bool
+    deactivated_at: datetime | None = None
+
+
+class AgentResetResponse(APIModel):
+    agent_id: str
+    reset_at: datetime
+    deleted_executions: int
+    deleted_positions: int
+    deleted_snapshots: int
 
 
 class ExecutionReportItem(APIModel):
     external_order_id: str = Field(min_length=1, max_length=255)
     symbol: str
     side: Literal["buy", "sell"]
-    quantity: float = Field(gt=0)
-    price: float = Field(gt=0)
-    fees: float = Field(default=0, ge=0)
+    quantity: float = Field(gt=0, le=MAX_EXECUTION_QUANTITY)
+    price: float = Field(gt=0, le=MAX_EXECUTION_PRICE)
+    fees: float = Field(default=0, ge=0, le=MAX_EXECUTION_FEES)
     executed_at: datetime
 
     @field_validator("external_order_id")
@@ -110,6 +152,18 @@ class ExecutionReportItem(APIModel):
         normalized = value.strip().upper()
         if not normalized:
             raise ValueError("symbol is required.")
+        if not SYMBOL_PATTERN.fullmatch(normalized):
+            raise ValueError(
+                "symbol must contain only letters, numbers, '.', '/', '_' or '-'."
+            )
+        return normalized
+
+    @field_validator("executed_at")
+    @classmethod
+    def normalize_executed_at(cls, value: datetime) -> datetime:
+        normalized = normalize_utc(value)
+        if normalized > utc_now() + MAX_FUTURE_SKEW:
+            raise ValueError("executed_at cannot be in the future.")
         return normalized
 
 
@@ -128,6 +182,20 @@ class ExecutionResult(APIModel):
     gross_notional: float
     fees: float
     executed_at: datetime
+
+
+class ExecutionListItem(APIModel):
+    id: str
+    external_order_id: str
+    symbol: str
+    side: str
+    quantity: float
+    price_per_share: float
+    gross_notional: float
+    fees: float
+    realized_pnl: float
+    executed_at: datetime
+    created_at: datetime
 
 
 class PositionView(APIModel):
@@ -149,6 +217,11 @@ class PortfolioView(APIModel):
 class ExecutionReportResponse(APIModel):
     results: list[ExecutionResult]
     portfolio_after: PortfolioView
+
+
+class ExecutionPage(APIModel):
+    items: list[ExecutionListItem]
+    next_cursor: str | None = None
 
 
 class PricesResponse(APIModel):
@@ -174,6 +247,11 @@ class ActivityItem(APIModel):
     summary: str
     metadata: dict
     created_at: datetime
+
+
+class ActivityPage(APIModel):
+    items: list[ActivityItem]
+    next_cursor: str | None = None
 
 
 class LeaderboardEntry(APIModel):
