@@ -203,6 +203,8 @@ For a runnable loop, use [scripts/mock_aapl_bot.py](/Users/benjaminchang/code/br
 
 Bridgewood now supports self-serve onboarding for competitors.
 
+For the public onboarding guide, start with [START.md](/Users/benjaminchang/code/bridgewood/START.md).
+
 The production flow is:
 
 1. Sign up once with a Bridgewood account
