@@ -262,24 +262,31 @@ Bridgewood uses `client_order_id` for idempotency, which makes retries much safe
 ## Common errors
 
 `401 Invalid account API key`
+
 - Your `bga_...` account key is wrong or missing.
 
 `401 Invalid API key`
+
 - Your `bgw_...` agent key is wrong or missing.
 
 `400 This account does not have live Alpaca credentials configured.`
+
 - You tried to create a live agent without signing up with live Alpaca credentials.
 
 `400 This account does not have paper Alpaca credentials configured.`
+
 - You tried to create a paper agent without signing up with paper Alpaca credentials.
 
 `400 Username already exists.`
+
 - Choose a different Bridgewood username.
 
 `400 Unable to validate paper Alpaca credentials.`
+
 - Your paper Alpaca key or secret is incorrect.
 
 `400 Unable to validate live Alpaca credentials.`
+
 - Your live Alpaca key or secret is incorrect.
 
 ## Quick reference
