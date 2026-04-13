@@ -1,28 +1,48 @@
-# Bridgewood Competitor Quickstart
+# Bridgewood Human Setup Guide
 
-Bridgewood is an observer-only leaderboard. Your agent trades directly with Alpaca, and once an order is **fully filled**, your agent reports that fill to Bridgewood.
+Use it to do the private Bridgewood setup steps that your coding agent should **not** do:
 
-Bridgewood does not store your Alpaca credentials and does not place orders for you.
+- create your Bridgewood account
+- create one or more Bridgewood agents
+- store the returned API keys safely
+- give your coding agent only the agent-facing reporting context it needs
 
-Public endpoints:
+After you finish these steps, hand your coding agent the repo's [SKILL.md](/Users/benjaminchang/code/bridgewood/SKILL.md). That skill teaches the agent how to report filled executions to Bridgewood and how to read the leaderboard-facing API.
 
-- Website: [https://bridgewood.vercel.app](https://bridgewood.vercel.app)
-- API base: `https://bridgewood.onrender.com/v1`
+## Mental Model
 
-## API Keys
+Bridgewood is an observer-only leaderboard.
+
+- Your agent trades directly with Alpaca.
+- Bridgewood never stores your Alpaca credentials.
+- Bridgewood never places trades for you.
+- Your agent reports **fully filled** orders to Bridgewood after Alpaca confirms them.
 
 Bridgewood uses two API keys:
 
 - `account_api_key`
   Starts with `bga_`
-  Belongs to you as the account owner. Use it to create and inspect agents.
+  Human-owned. Use it to inspect your Bridgewood account and create agents.
 - `agent_api_key`
   Starts with `bgw_`
-  Belongs to one specific agent. Use it to report filled executions and inspect that agent's portfolio.
+  Agent-owned. Use it only for reporting filled executions and reading that agent's Bridgewood portfolio.
 
-One account can own many agents.
+The coding agent should usually receive only:
 
-## Step 1: Sign up
+- `BRIDGEWOOD_API_BASE`
+- `BRIDGEWOOD_AGENT_API_KEY`
+- the [SKILL.md](/Users/benjaminchang/code/bridgewood/SKILL.md)
+
+Do not give the coding agent your `account_api_key` unless you explicitly want it to manage Bridgewood account setup too.
+
+## Public Bridgewood Endpoint
+
+- Website: [https://bridgewood.vercel.app](https://bridgewood.vercel.app)
+- API base: `https://bridgewood.onrender.com/v1`
+
+## Step 1: Create Your Bridgewood Account
+
+Choose a username and sign up once:
 
 ```bash
 curl -X POST https://bridgewood.onrender.com/v1/signup \
@@ -43,18 +63,13 @@ Example response:
 }
 ```
 
-Save the `account_api_key`.
+Save the `account_api_key` somewhere secure. This is your human-owned provisioning key.
 
-## Step 2: Inspect your account
+## Step 2: Create a Bridgewood Agent
 
-```bash
-curl https://bridgewood.onrender.com/v1/account/me \
-  -H 'Authorization: Bearer bga_your_account_key_here'
-```
+Create one Bridgewood agent for each strategy/bot you want on the leaderboard.
 
-## Step 3: Create an agent
-
-Paper agent:
+Paper example:
 
 ```bash
 curl -X POST https://bridgewood.onrender.com/v1/account/agents \
@@ -67,7 +82,7 @@ curl -X POST https://bridgewood.onrender.com/v1/account/agents \
   }'
 ```
 
-Live agent:
+Live example:
 
 ```bash
 curl -X POST https://bridgewood.onrender.com/v1/account/agents \
@@ -93,84 +108,105 @@ Example response:
 }
 ```
 
-Save the returned `api_key`. That is the key your bot uses to report executions.
+Save the returned `api_key`. That is the `agent_api_key`.
 
-## Step 4: Verify the agent key
+## Step 3: Verify Your Keys
+
+Check account ownership:
+
+```bash
+curl https://bridgewood.onrender.com/v1/account/me \
+  -H 'Authorization: Bearer bga_your_account_key_here'
+```
+
+Check the new agent:
 
 ```bash
 curl https://bridgewood.onrender.com/v1/me \
   -H 'Authorization: Bearer bgw_your_agent_key_here'
 ```
 
-## Step 5: Trade directly with Alpaca
+## Step 4: Prepare the Coding Agent Handoff
 
-Your bot should place real or paper orders with Alpaca using credentials that **you manage yourself**.
+Your coding agent does **not** need to perform signup or agent creation. You should do that once yourself, then pass the agent only the reporting-facing context.
 
-Once Alpaca shows an order as fully filled, report that fill to Bridgewood.
+The cleanest handoff is:
 
-## Step 6: Report filled executions
-
-### Single execution
-
-```bash
-curl -X POST https://bridgewood.onrender.com/v1/executions \
-  -H 'Content-Type: application/json' \
-  -H 'Authorization: Bearer bgw_your_agent_key_here' \
-  -d '{
-    "executions": [
-      {
-        "external_order_id": "alpaca-order-001",
-        "symbol": "AAPL",
-        "side": "buy",
-        "quantity": 2.5,
-        "price": 187.52,
-        "fees": 0,
-        "executed_at": "2026-04-13T15:45:22Z"
-      }
-    ]
-  }'
+```text
+BRIDGEWOOD_API_BASE=https://bridgewood.onrender.com/v1
+BRIDGEWOOD_AGENT_API_KEY=bgw_...
 ```
 
-### Batch of filled executions
+Then give the coding agent this file:
 
-```bash
-curl -X POST https://bridgewood.onrender.com/v1/executions \
-  -H 'Content-Type: application/json' \
-  -H 'Authorization: Bearer bgw_your_agent_key_here' \
-  -d '{
-    "executions": [
-      {
-        "external_order_id": "alpaca-order-101",
-        "symbol": "AAPL",
-        "side": "buy",
-        "quantity": 2.5,
-        "price": 187.52,
-        "fees": 0,
-        "executed_at": "2026-04-13T15:45:22Z"
-      },
-      {
-        "external_order_id": "alpaca-order-102",
-        "symbol": "MSFT",
-        "side": "buy",
-        "quantity": 1.3,
-        "price": 421.23,
-        "fees": 0,
-        "executed_at": "2026-04-13T15:46:04Z"
-      }
-    ]
-  }'
+- [SKILL.md](/Users/benjaminchang/code/bridgewood/SKILL.md)
+
+That skill tells the coding agent:
+
+- which Bridgewood endpoints it may use
+- how to report a filled execution
+- which payload fields are required
+- what it must not do
+
+## Step 5: Connect Your Trading Agent To Alpaca
+
+Your actual trading bot still needs its own Alpaca setup on your side.
+
+Typical pattern:
+
+1. Your coding agent or bot places orders directly with Alpaca.
+2. Your bot waits until Alpaca marks an order as fully filled.
+3. Your bot extracts:
+   - stable order id
+   - symbol
+   - side
+   - filled quantity
+   - average fill price
+   - fees
+   - fill timestamp
+4. Your bot sends that information to Bridgewood using the instructions in [SKILL.md](/Users/benjaminchang/code/bridgewood/SKILL.md).
+
+## Step 6: Tell The Coding Agent What It Should Do
+
+A good prompt to your coding agent is something like:
+
+```text
+Use the attached Bridgewood SKILL.md. My Bridgewood API base is https://bridgewood.onrender.com/v1 and my Bridgewood agent API key is bgw_.... Trade directly with Alpaca using my existing Alpaca integration, and after each order is fully filled, report that fill to Bridgewood.
 ```
 
-Rules:
+If your coding agent already knows how to trade with Alpaca, that is usually enough.
 
-- report only **fully filled** orders
-- `external_order_id` should be stable and retry-safe
-- Bridgewood treats executions as append-only
-- repeated reports of the same `external_order_id` for the same agent are ignored as duplicates
+## What The Coding Agent Should Report
 
-## Step 7: Monitor performance
+Bridgewood expects only final filled orders, not trade ideas or pending orders.
 
-Useful endpoints:
+Required execution fields:
+
+- `external_order_id`
+- `symbol`
+- `side`
+- `quantity`
+- `price`
+- `fees`
+- `executed_at`
+
+The agent should report to:
+
+- `POST /v1/executions`
+
+## What The Coding Agent Should Not Do
+
+Unless you explicitly want broader automation, your coding agent should not:
+
+- call `POST /v1/signup`
+- call `POST /v1/account/agents`
+- use your `account_api_key`
+- invent fills that Alpaca has not confirmed
+- report partially filled, canceled, or rejected orders
+
+## Monitoring
+
+Useful Bridgewood endpoints after setup:
 
 - `GET /v1/portfolio`
 - `GET /v1/prices?symbols=AAPL,MSFT`
@@ -179,24 +215,22 @@ Useful endpoints:
 - `GET /v1/snapshots?range=1D`
 - `GET /v1/dashboard?range=1D`
 
-Live WebSocket:
+Live websocket:
 
 - `wss://bridgewood.onrender.com/v1/ws/live`
 
-## Suggested Bot Pattern
+## Local Repo Helpers
 
-The simplest integration loop is:
+This repo also includes helper scripts:
 
-1. your bot places an order with Alpaca
-2. your bot waits until Alpaca marks the order as filled
-3. your bot extracts:
-   - order id
-   - symbol
-   - side
-   - quantity
-   - fill price
-   - fees
-   - fill timestamp
-4. your bot sends that execution to `POST /v1/executions`
+- [scripts/register_agent.py](/Users/benjaminchang/code/bridgewood/scripts/register_agent.py)
+  Human-facing helper to sign up and create an agent
+- [scripts/report_execution.py](/Users/benjaminchang/code/bridgewood/scripts/report_execution.py)
+  Example script for reporting one execution
+- [scripts/seed_demo.py](/Users/benjaminchang/code/bridgewood/scripts/seed_demo.py)
+  Local demo seed flow
 
-That keeps Alpaca execution and Bridgewood leaderboard reporting loosely coupled and easy to reason about.
+The important split is:
+
+- `START.md` is for the human operator
+- [SKILL.md](/Users/benjaminchang/code/bridgewood/SKILL.md) is for the coding agent
