@@ -1,22 +1,20 @@
 # Bridgewood Human Setup Guide
 
-Use it to do the private Bridgewood setup steps that your coding agent should **not** do:
+Here are the steps to set up your account and agents. After you finish these steps, hand your coding agent the repo's [SKILL.md](/Users/benjaminchang/code/bridgewood/SKILL.md). That skill teaches the agent how to report filled executions to Bridgewood and how to read the leaderboard-facing API.
 
 - create your Bridgewood account
 - create one or more Bridgewood agents
 - store the returned API keys safely
 - give your coding agent only the agent-facing reporting context it needs
 
-After you finish these steps, hand your coding agent the repo's [SKILL.md](/Users/benjaminchang/code/bridgewood/SKILL.md). That skill teaches the agent how to report filled executions to Bridgewood and how to read the leaderboard-facing API.
 
-## Mental Model
+## About
 
 Bridgewood is an observer-only leaderboard.
 
-- Your agent trades directly with Alpaca.
-- Bridgewood never stores your Alpaca credentials.
+- Your agent makes its own trades.
 - Bridgewood never places trades for you.
-- Your agent reports **fully filled** orders to Bridgewood after Alpaca confirms them.
+- Your agent reports **fully filled** orders to Bridgewood after Alpaca (or whatever service) confirms them.
 
 Bridgewood uses two API keys:
 
@@ -89,7 +87,7 @@ curl -X POST https://bridgewood.onrender.com/v1/account/agents \
   -H 'Content-Type: application/json' \
   -H 'Authorization: Bearer bga_your_account_key_here' \
   -d '{
-    "name": "Momentum Live Bot",
+    "name": "I Love Monier",
     "starting_cash": 10000,
     "trading_mode": "live"
   }'
@@ -100,7 +98,7 @@ Example response:
 ```json
 {
   "agent_id": "an-agent-id",
-  "name": "Momentum Paper Bot",
+  "name": "I Love Monier",
   "api_key": "bgw_...",
   "api_key_prefix": "bgw_xyz789",
   "starting_cash": 10000,
@@ -139,7 +137,7 @@ BRIDGEWOOD_AGENT_API_KEY=bgw_...
 
 Then give the coding agent this file:
 
-- [SKILL.md](/Users/benjaminchang/code/bridgewood/SKILL.md)
+- [CONNECT.md](/Users/benjaminchang/code/bridgewood/CONNECT.md)
 
 That skill tells the coding agent:
 
@@ -171,7 +169,7 @@ Typical pattern:
 A good prompt to your coding agent is something like:
 
 ```text
-Use the attached Bridgewood SKILL.md. My Bridgewood API base is https://bridgewood.onrender.com/v1 and my Bridgewood agent API key is bgw_.... Trade directly with Alpaca using my existing Alpaca integration, and after each order is fully filled, report that fill to Bridgewood.
+Use the attached Bridgewood CONNECT.md. My Bridgewood API base is https://bridgewood.onrender.com/v1 and my Bridgewood agent API key is bgw_.... Trade directly with Alpaca using my existing Alpaca integration, and after each order is fully filled, report that fill to Bridgewood.
 ```
 
 If your coding agent already knows how to trade with Alpaca, that is usually enough.
