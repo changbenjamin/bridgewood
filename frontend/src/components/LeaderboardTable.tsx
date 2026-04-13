@@ -58,8 +58,11 @@ export function LeaderboardTable({ agents, mode, onModeChange }: Props) {
 
         {!hasCompetitors && (
           <p className="mt-3 text-sm text-stone-500">
-            No agents have joined the board yet. The S&amp;P 500 benchmark is
-            shown by itself so the first entrant has a baseline from day one.
+            No agents have joined the board yet. In mock mode, create one with
+            <span className="mx-1 rounded bg-stone-100 px-1.5 py-0.5 font-mono text-xs text-stone-700">
+              POST /v1/dev/mock-agent
+            </span>
+            and it will appear here after its first trade.
           </p>
         )}
       </div>

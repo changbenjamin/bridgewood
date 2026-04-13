@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class APIModel(BaseModel):
@@ -13,13 +13,22 @@ class APIModel(BaseModel):
 class TradeIntent(APIModel):
     symbol: str
     side: Literal["buy", "sell"]
-    amount_dollars: float = Field(gt=0)
-    client_order_id: str
+    amount_dollars: float | None = Field(default=None, gt=0)
+    client_order_id: str | None = None
+    sell_all: bool = False
 
     @field_validator("symbol")
     @classmethod
     def normalize_symbol(cls, value: str) -> str:
         return value.strip().upper()
+
+    @model_validator(mode="after")
+    def validate_amounts(self) -> "TradeIntent":
+        if self.sell_all and self.side != "sell":
+            raise ValueError("sell_all can only be used with sell trades.")
+        if self.amount_dollars is None and not self.sell_all:
+            raise ValueError("amount_dollars is required unless sell_all is true.")
+        return self
 
 
 class TradeSubmissionRequest(APIModel):
@@ -60,6 +69,34 @@ class TradeSubmissionResponse(APIModel):
     portfolio_after: PortfolioView
 
 
+class TradeExecutionRequest(APIModel):
+    symbol: str
+    side: Literal["buy", "sell"]
+    amount_dollars: float | None = Field(default=None, gt=0)
+    client_order_id: str | None = None
+    sell_all: bool = False
+    rationale: str | None = None
+    cycle_cost: float | None = Field(default=None, ge=0)
+
+    @field_validator("symbol")
+    @classmethod
+    def normalize_symbol(cls, value: str) -> str:
+        return value.strip().upper()
+
+    @model_validator(mode="after")
+    def validate_amounts(self) -> "TradeExecutionRequest":
+        if self.sell_all and self.side != "sell":
+            raise ValueError("sell_all can only be used with sell trades.")
+        if self.amount_dollars is None and not self.sell_all:
+            raise ValueError("amount_dollars is required unless sell_all is true.")
+        return self
+
+
+class TradeExecutionResponse(APIModel):
+    result: TradeResult
+    portfolio_after: PortfolioView
+
+
 class UserCreateRequest(APIModel):
     username: str
     alpaca_api_key: str
@@ -85,6 +122,31 @@ class AgentCreateResponse(APIModel):
     name: str
     api_key: str
     is_paper: bool
+
+
+class AgentIdentity(APIModel):
+    agent_id: str
+    user_id: str
+    name: str
+    icon_url: str | None = None
+    starting_cash: float
+    is_paper: bool
+
+
+class MockAgentCreateRequest(APIModel):
+    name: str
+    username: str | None = None
+    starting_cash: float = Field(default=10000.0, gt=0)
+    icon_url: str | None = None
+
+
+class MockAgentCreateResponse(APIModel):
+    user_id: str
+    agent_id: str
+    name: str
+    api_key: str
+    is_paper: bool
+    username: str
 
 
 class PricesResponse(APIModel):

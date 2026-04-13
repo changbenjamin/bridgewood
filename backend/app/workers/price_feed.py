@@ -9,7 +9,11 @@ from sqlalchemy import select
 from app.core.config import get_settings
 from app.models.entities import BenchmarkState, Position, User
 from app.schemas.api import LeaderboardPayload
-from app.services.alpaca_client import AlpacaCredentials, get_broker_gateway
+from app.services.alpaca_client import (
+    AlpacaCredentials,
+    get_broker_gateway,
+    get_live_benchmark_price,
+)
 from app.services.broadcaster import ConnectionManager
 from app.services.leaderboard import build_leaderboard_payload
 from app.services.security import decrypt_secret
@@ -51,24 +55,44 @@ class PriceFeedService:
 
     async def refresh_once(self) -> LeaderboardPayload | None:
         with self.session_factory() as db:
+            benchmark_symbol = self.settings.benchmark_symbol
             symbols = {
                 position.symbol for position in db.scalars(select(Position)).all()
             }
             benchmark_state = db.get(BenchmarkState, 1)
             if benchmark_state:
                 symbols.add(benchmark_state.symbol)
-            symbols.add(self.settings.benchmark_symbol)
+            symbols.add(benchmark_symbol)
             if not symbols:
                 return None
 
             credentials = self._get_any_credentials(db)
-            if hasattr(self.gateway, "advance_prices"):
-                maybe_prices = await self.gateway.advance_prices(sorted(symbols))
+            non_benchmark_symbols = sorted(
+                symbol for symbol in symbols if symbol != benchmark_symbol
+            )
+
+            if non_benchmark_symbols and hasattr(self.gateway, "advance_prices"):
+                maybe_prices = await self.gateway.advance_prices(non_benchmark_symbols)
                 if maybe_prices:
                     self.prices.update(maybe_prices)
 
-            latest = await self.gateway.get_latest_prices(credentials, sorted(symbols))
-            self.prices.update(latest)
+            if non_benchmark_symbols:
+                latest = await self.gateway.get_latest_prices(
+                    credentials, non_benchmark_symbols
+                )
+                self.prices.update(latest)
+
+            benchmark_price = await get_live_benchmark_price(
+                benchmark_symbol, credentials
+            )
+            if benchmark_price is None:
+                if benchmark_symbol in self.prices:
+                    benchmark_price = self.prices[benchmark_symbol]
+                elif benchmark_state is not None:
+                    benchmark_price = Decimal(str(benchmark_state.starting_price))
+            if benchmark_price is not None:
+                self.prices[benchmark_symbol] = benchmark_price
+
             self.last_updated_at = datetime.utcnow()
             payload = build_leaderboard_payload(
                 db, self.prices, timestamp=self.last_updated_at

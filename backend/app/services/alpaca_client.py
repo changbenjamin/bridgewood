@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import httpx
 
@@ -14,6 +15,7 @@ from app.core.config import get_settings
 
 settings = get_settings()
 PRICE_QUANT = Decimal("0.000001")
+YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart"
 
 
 def to_decimal(value: Any) -> Decimal:
@@ -26,6 +28,15 @@ def normalize_symbol(symbol: str) -> str:
 
 def is_crypto_symbol(symbol: str) -> bool:
     return "/" in symbol
+
+
+def is_regular_equity_market_hours(now: datetime | None = None) -> bool:
+    current = (now or datetime.utcnow()).astimezone(ZoneInfo("America/New_York"))
+    if current.weekday() >= 5:
+        return False
+    opening = current.replace(hour=9, minute=30, second=0, microsecond=0)
+    closing = current.replace(hour=16, minute=0, second=0, microsecond=0)
+    return opening <= current <= closing
 
 
 @dataclass
@@ -345,3 +356,52 @@ def get_broker_gateway() -> BaseBrokerGateway:
             MockBrokerGateway() if settings.mock_broker_mode else RealBrokerGateway()
         )
     return _broker_gateway
+
+
+async def get_live_benchmark_price(
+    symbol: str, credentials: AlpacaCredentials | None
+) -> Decimal | None:
+    normalized_symbol = normalize_symbol(symbol)
+    use_intraday = is_regular_equity_market_hours()
+
+    if credentials is not None and use_intraday:
+        try:
+            live_prices = await RealBrokerGateway().get_latest_prices(
+                credentials, [normalized_symbol]
+            )
+            price = live_prices.get(normalized_symbol)
+            if price is not None:
+                return price
+        except Exception:
+            pass
+
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            response = await client.get(
+                f"{YAHOO_CHART_URL}/{normalized_symbol}",
+                params=(
+                    {"interval": "1m", "range": "1d"}
+                    if use_intraday
+                    else {"interval": "1d", "range": "5d"}
+                ),
+            )
+            response.raise_for_status()
+        payload = response.json()
+    except Exception:
+        return None
+
+    results = payload.get("chart", {}).get("result") or []
+    if not results:
+        return None
+
+    result = results[0]
+    meta = result.get("meta", {})
+    if use_intraday and meta.get("regularMarketPrice") is not None:
+        return to_decimal(meta["regularMarketPrice"])
+
+    closes = result.get("indicators", {}).get("quote", [{}])[0].get("close", [])
+    for close in reversed(closes):
+        if close is not None:
+            return to_decimal(close)
+
+    return None
