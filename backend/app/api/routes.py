@@ -133,7 +133,9 @@ def _get_any_user_credentials(user: User) -> AlpacaCredentials | None:
     return None
 
 
-def _get_user_credentials_for_mode(user: User, *, real_money: bool) -> AlpacaCredentials:
+def _get_user_credentials_for_mode(
+    user: User, *, real_money: bool
+) -> AlpacaCredentials:
     if real_money:
         live_api_key = _decrypt_optional_secret(user.alpaca_live_api_key)
         live_secret_key = _decrypt_optional_secret(user.alpaca_live_secret_key)
@@ -699,15 +701,11 @@ async def create_user(
         alpaca_api_key=payload.alpaca_api_key,
         alpaca_secret_key=payload.alpaca_secret_key,
         alpaca_base_url=payload.alpaca_base_url,
-        alpaca_paper_api_key=(
-            payload.alpaca_api_key if is_paper_credentials else None
-        ),
+        alpaca_paper_api_key=(payload.alpaca_api_key if is_paper_credentials else None),
         alpaca_paper_secret_key=(
             payload.alpaca_secret_key if is_paper_credentials else None
         ),
-        alpaca_live_api_key=(
-            None if is_paper_credentials else payload.alpaca_api_key
-        ),
+        alpaca_live_api_key=(None if is_paper_credentials else payload.alpaca_api_key),
         alpaca_live_secret_key=(
             None if is_paper_credentials else payload.alpaca_secret_key
         ),
