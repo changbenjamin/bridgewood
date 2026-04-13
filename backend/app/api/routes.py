@@ -19,7 +19,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_current_agent, require_admin
+from app.api.deps import get_current_account_user, get_current_agent, require_admin
 from app.core.config import get_settings
 from app.db.session import get_db
 from app.models.entities import (
@@ -36,6 +36,10 @@ from app.models.entities import (
 from app.schemas.api import (
     ActivityItem,
     ActivityPayload,
+    AccountAgentCreateRequest,
+    AccountAgentSummary,
+    AccountIdentity,
+    AccountOverview,
     AgentCreateRequest,
     AgentCreateResponse,
     AgentIdentity,
@@ -45,6 +49,8 @@ from app.schemas.api import (
     MockAgentCreateResponse,
     PortfolioView,
     PricesResponse,
+    SignupRequest,
+    SignupResponse,
     SnapshotRange,
     TradeExecutionRequest,
     TradeExecutionResponse,
@@ -71,6 +77,7 @@ from app.services.portfolio_engine import (
 from app.services.security import (
     decrypt_secret,
     encrypt_secret,
+    generate_account_api_key,
     generate_agent_api_key,
     hash_api_key,
 )
@@ -86,6 +93,10 @@ def _money(value: float | Decimal | None) -> float | None:
     if value is None:
         return None
     return round(float(value), 4)
+
+
+def _is_paper_account(base_url: str) -> bool:
+    return "paper" in base_url.lower()
 
 
 def _get_user_credentials(user: User) -> AlpacaCredentials:
@@ -136,12 +147,35 @@ def _create_agent_record(
         api_key_prefix=api_key[:10],
         starting_cash=Decimal(str(starting_cash)),
         icon_url=icon_url,
-        is_paper="paper" in user.alpaca_base_url,
+        is_paper=_is_paper_account(user.alpaca_base_url),
     )
     db.add(agent)
     db.commit()
     db.refresh(agent)
     return agent, api_key
+
+
+def _create_user_record(
+    *,
+    db: Session,
+    username: str,
+    alpaca_api_key: str,
+    alpaca_secret_key: str,
+    alpaca_base_url: str,
+) -> tuple[User, str]:
+    account_api_key = generate_account_api_key()
+    user = User(
+        username=username,
+        account_api_key_hash=hash_api_key(account_api_key),
+        account_api_key_prefix=account_api_key[:10],
+        alpaca_api_key=encrypt_secret(alpaca_api_key),
+        alpaca_secret_key=encrypt_secret(alpaca_secret_key),
+        alpaca_base_url=alpaca_base_url.rstrip("/"),
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    return user, account_api_key
 
 
 def _build_agent_identity(agent: Agent) -> AgentIdentity:
@@ -168,8 +202,52 @@ def _build_trade_result(trade: Trade) -> TradeResult:
     )
 
 
+def _build_account_identity(user: User) -> AccountIdentity:
+    return AccountIdentity(
+        user_id=user.id,
+        username=user.username,
+        alpaca_base_url=user.alpaca_base_url,
+        is_paper=_is_paper_account(user.alpaca_base_url),
+        account_api_key_prefix=user.account_api_key_prefix,
+    )
+
+
+def _build_account_agent_summary(agent: Agent) -> AccountAgentSummary:
+    return AccountAgentSummary(
+        agent_id=agent.id,
+        name=agent.name,
+        icon_url=agent.icon_url,
+        starting_cash=float(agent.starting_cash),
+        api_key_prefix=agent.api_key_prefix,
+        is_paper=agent.is_paper,
+        created_at=agent.created_at,
+    )
+
+
 def _generate_client_order_id(symbol: str, side: str) -> str:
     return f"{side}-{symbol.lower()}-{uuid4().hex[:12]}"
+
+
+async def _validate_broker_credentials(
+    alpaca_api_key: str,
+    alpaca_secret_key: str,
+    alpaca_base_url: str,
+) -> None:
+    if settings.mock_broker_mode:
+        return
+
+    credentials = AlpacaCredentials(
+        api_key=alpaca_api_key,
+        secret_key=alpaca_secret_key,
+        base_url=alpaca_base_url.rstrip("/"),
+    )
+    try:
+        await gateway.get_account_state(credentials)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Unable to validate Alpaca credentials for signup.",
+        ) from exc
 
 
 async def _ensure_benchmark_initialized(request: Request, db: Session) -> None:
@@ -472,19 +550,27 @@ async def create_user(
             status_code=status.HTTP_409_CONFLICT, detail="Username already exists."
         )
 
-    user = User(
-        username=payload.username,
-        alpaca_api_key=encrypt_secret(payload.alpaca_api_key),
-        alpaca_secret_key=encrypt_secret(payload.alpaca_secret_key),
-        alpaca_base_url=payload.alpaca_base_url.rstrip("/"),
+    await _validate_broker_credentials(
+        payload.alpaca_api_key,
+        payload.alpaca_secret_key,
+        payload.alpaca_base_url,
     )
-    db.add(user)
-    db.commit()
-    db.refresh(user)
+    user, account_api_key = _create_user_record(
+        db=db,
+        username=payload.username,
+        alpaca_api_key=payload.alpaca_api_key,
+        alpaca_secret_key=payload.alpaca_secret_key,
+        alpaca_base_url=payload.alpaca_base_url,
+    )
 
     await _ensure_benchmark_initialized(request, db)
     return UserCreateResponse(
-        user_id=user.id, username=user.username, alpaca_base_url=user.alpaca_base_url
+        user_id=user.id,
+        username=user.username,
+        alpaca_base_url=user.alpaca_base_url,
+        is_paper=_is_paper_account(user.alpaca_base_url),
+        account_api_key=account_api_key,
+        account_api_key_prefix=user.account_api_key_prefix,
     )
 
 
@@ -508,7 +594,49 @@ async def create_agent(
         icon_url=payload.icon_url,
     )
     return AgentCreateResponse(
-        agent_id=agent.id, name=agent.name, api_key=api_key, is_paper=agent.is_paper
+        agent_id=agent.id,
+        name=agent.name,
+        api_key=api_key,
+        api_key_prefix=agent.api_key_prefix,
+        starting_cash=float(agent.starting_cash),
+        icon_url=agent.icon_url,
+        is_paper=agent.is_paper,
+    )
+
+
+@router.post("/signup", response_model=SignupResponse, status_code=status.HTTP_201_CREATED)
+async def signup(
+    payload: SignupRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> SignupResponse:
+    if db.scalar(select(User).where(User.username == payload.username)):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Username already exists.",
+        )
+
+    await _validate_broker_credentials(
+        payload.alpaca_api_key,
+        payload.alpaca_secret_key,
+        payload.alpaca_base_url,
+    )
+    user, account_api_key = _create_user_record(
+        db=db,
+        username=payload.username,
+        alpaca_api_key=payload.alpaca_api_key,
+        alpaca_secret_key=payload.alpaca_secret_key,
+        alpaca_base_url=payload.alpaca_base_url,
+    )
+
+    await _ensure_benchmark_initialized(request, db)
+    return SignupResponse(
+        user_id=user.id,
+        username=user.username,
+        alpaca_base_url=user.alpaca_base_url,
+        is_paper=_is_paper_account(user.alpaca_base_url),
+        account_api_key=account_api_key,
+        account_api_key_prefix=user.account_api_key_prefix or "",
     )
 
 
@@ -525,15 +653,13 @@ async def create_mock_agent(
         )
 
     username = _next_mock_username(db, payload.username, payload.name)
-    user = User(
+    user, account_api_key = _create_user_record(
+        db=db,
         username=username,
-        alpaca_api_key=encrypt_secret(f"mock-{username}-key"),
-        alpaca_secret_key=encrypt_secret(f"mock-{username}-secret"),
+        alpaca_api_key=f"mock-{username}-key",
+        alpaca_secret_key=f"mock-{username}-secret",
         alpaca_base_url="https://paper-api.alpaca.markets",
     )
-    db.add(user)
-    db.commit()
-    db.refresh(user)
 
     agent, api_key = _create_agent_record(
         db=db,
@@ -549,8 +675,70 @@ async def create_mock_agent(
         agent_id=agent.id,
         name=agent.name,
         api_key=api_key,
+        account_api_key=account_api_key,
         is_paper=agent.is_paper,
         username=user.username,
+    )
+
+
+@router.get("/account/me", response_model=AccountOverview)
+async def get_account_me(
+    account: User = Depends(get_current_account_user),
+    db: Session = Depends(get_db),
+) -> AccountOverview:
+    agents = list(
+        db.scalars(
+            select(Agent)
+            .where(Agent.user_id == account.id)
+            .order_by(Agent.created_at.asc())
+        )
+    )
+    return AccountOverview(
+        account=_build_account_identity(account),
+        agents=[_build_account_agent_summary(agent) for agent in agents],
+    )
+
+
+@router.get("/account/agents", response_model=list[AccountAgentSummary])
+async def get_account_agents(
+    account: User = Depends(get_current_account_user),
+    db: Session = Depends(get_db),
+) -> list[AccountAgentSummary]:
+    agents = list(
+        db.scalars(
+            select(Agent)
+            .where(Agent.user_id == account.id)
+            .order_by(Agent.created_at.asc())
+        )
+    )
+    return [_build_account_agent_summary(agent) for agent in agents]
+
+
+@router.post(
+    "/account/agents",
+    response_model=AgentCreateResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_account_agent(
+    payload: AccountAgentCreateRequest,
+    account: User = Depends(get_current_account_user),
+    db: Session = Depends(get_db),
+) -> AgentCreateResponse:
+    agent, api_key = _create_agent_record(
+        db=db,
+        user=account,
+        name=payload.name,
+        starting_cash=payload.starting_cash,
+        icon_url=payload.icon_url,
+    )
+    return AgentCreateResponse(
+        agent_id=agent.id,
+        name=agent.name,
+        api_key=api_key,
+        api_key_prefix=agent.api_key_prefix,
+        starting_cash=float(agent.starting_cash),
+        icon_url=agent.icon_url,
+        is_paper=agent.is_paper,
     )
 
 

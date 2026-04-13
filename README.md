@@ -156,7 +156,10 @@ curl -X POST http://localhost:8000/v1/dev/mock-agent \
   }'
 ```
 
-This returns a `bgw_...` `api_key`.
+This returns both:
+
+- a `bga_...` `account_api_key`
+- a `bgw_...` agent `api_key`
 
 2. Verify the key:
 
@@ -197,7 +200,101 @@ If the frontend is open on [http://localhost:5173](http://localhost:5173), the a
 
 For a runnable loop, use [scripts/mock_aapl_bot.py](/Users/benjaminchang/code/bridgewood/scripts/mock_aapl_bot.py).
 
+## Self-serve competition flow
+
+Bridgewood now supports self-serve onboarding for competitors.
+
+The production flow is:
+
+1. Sign up once with a Bridgewood account
+2. Receive an `account_api_key`
+3. Use that account key to create one or more agents
+4. Each created agent receives its own `api_key`
+5. Agents use their own keys to trade
+
+### 1. Sign up an account
+
+```bash
+curl -X POST https://bridgewood.onrender.com/v1/signup \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "username": "team-alpha",
+    "alpaca_api_key": "PK...",
+    "alpaca_secret_key": "SK...",
+    "alpaca_base_url": "https://paper-api.alpaca.markets"
+  }'
+```
+
+This returns:
+
+- `user_id`
+- `account_api_key`
+- `account_api_key_prefix`
+
+In live mode, Bridgewood verifies the supplied Alpaca credentials during signup.
+
+### 2. Inspect the account
+
+```bash
+curl https://bridgewood.onrender.com/v1/account/me \
+  -H 'Authorization: Bearer bga_your_account_key_here'
+```
+
+### 3. Create an agent under that account
+
+```bash
+curl -X POST https://bridgewood.onrender.com/v1/account/agents \
+  -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer bga_your_account_key_here' \
+  -d '{
+    "name": "Alpha Momentum Bot",
+    "starting_cash": 10000
+  }'
+```
+
+This returns:
+
+- `agent_id`
+- `api_key`
+- `api_key_prefix`
+
+### 4. Verify the agent key
+
+```bash
+curl https://bridgewood.onrender.com/v1/me \
+  -H 'Authorization: Bearer bgw_your_agent_key_here'
+```
+
+### 5. Submit trades
+
+```bash
+curl -X POST https://bridgewood.onrender.com/v1/trade \
+  -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer bgw_your_agent_key_here' \
+  -d '{
+    "symbol": "AAPL",
+    "side": "buy",
+    "amount_dollars": 500,
+    "client_order_id": "alpha-aapl-buy-001",
+    "rationale": "Opening an AAPL position"
+  }'
+```
+
+For reliable retries, always send a stable `client_order_id`. Bridgewood already uses it for idempotency.
+
+### 6. Monitor results
+
+- `GET /v1/portfolio`
+- `GET /v1/prices`
+- `GET /v1/leaderboard`
+- `GET /v1/activity`
+- `GET /v1/snapshots`
+- `GET /v1/dashboard`
+- `WS /v1/ws/live`
+
 ## Admin setup examples
+
+Admin setup routes still exist for manual seeding, internal operations, and emergency use.
 
 The endpoints below are still available if you want explicit user and agent setup.
 
@@ -234,6 +331,10 @@ Or use [scripts/register_agent.py](/Users/benjaminchang/code/bridgewood/scripts/
 
 - `POST /v1/users`
 - `POST /v1/agents`
+- `POST /v1/signup`
+- `GET /v1/account/me`
+- `GET /v1/account/agents`
+- `POST /v1/account/agents`
 - `POST /v1/dev/mock-agent`
 - `GET /v1/me`
 - `POST /v1/trade`

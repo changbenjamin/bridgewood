@@ -46,6 +46,10 @@ class User(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
     username: Mapped[str] = mapped_column(String(120), unique=True, nullable=False)
+    account_api_key_hash: Mapped[str | None] = mapped_column(
+        String(64), unique=True, index=True
+    )
+    account_api_key_prefix: Mapped[str | None] = mapped_column(String(16))
     alpaca_api_key: Mapped[str] = mapped_column(Text, nullable=False)
     alpaca_secret_key: Mapped[str] = mapped_column(Text, nullable=False)
     alpaca_base_url: Mapped[str] = mapped_column(String(255), nullable=False)

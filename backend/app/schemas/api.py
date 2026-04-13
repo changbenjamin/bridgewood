@@ -98,29 +98,59 @@ class TradeExecutionResponse(APIModel):
 
 
 class UserCreateRequest(APIModel):
-    username: str
+    username: str = Field(min_length=3, max_length=120)
     alpaca_api_key: str
     alpaca_secret_key: str
     alpaca_base_url: str
+
+    @field_validator("username")
+    @classmethod
+    def normalize_username(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("username is required.")
+        return normalized
+
+    @field_validator("alpaca_base_url")
+    @classmethod
+    def normalize_alpaca_base_url(cls, value: str) -> str:
+        normalized = value.strip().rstrip("/")
+        if not normalized:
+            raise ValueError("alpaca_base_url is required.")
+        return normalized
 
 
 class UserCreateResponse(APIModel):
     user_id: str
     username: str
     alpaca_base_url: str
+    is_paper: bool
+    account_api_key: str | None = None
+    account_api_key_prefix: str | None = None
 
 
 class AgentCreateRequest(APIModel):
     user_id: str
-    name: str
+    name: str = Field(min_length=1, max_length=255)
     starting_cash: float = Field(gt=0)
     icon_url: str | None = None
+
+    @field_validator("name")
+    @classmethod
+    def normalize_agent_name(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("name is required.")
+        return normalized
 
 
 class AgentCreateResponse(APIModel):
     agent_id: str
     name: str
     api_key: str
+    api_key_prefix: str
+    starting_cash: float
+    icon_url: str | None = None
     is_paper: bool
 
 
@@ -134,10 +164,18 @@ class AgentIdentity(APIModel):
 
 
 class MockAgentCreateRequest(APIModel):
-    name: str
+    name: str = Field(min_length=1, max_length=255)
     username: str | None = None
     starting_cash: float = Field(default=10000.0, gt=0)
     icon_url: str | None = None
+
+    @field_validator("name")
+    @classmethod
+    def normalize_mock_agent_name(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("name is required.")
+        return normalized
 
 
 class MockAgentCreateResponse(APIModel):
@@ -145,8 +183,55 @@ class MockAgentCreateResponse(APIModel):
     agent_id: str
     name: str
     api_key: str
+    account_api_key: str | None = None
     is_paper: bool
     username: str
+
+
+class SignupRequest(UserCreateRequest):
+    pass
+
+
+class SignupResponse(UserCreateResponse):
+    account_api_key: str
+    account_api_key_prefix: str
+
+
+class AccountAgentCreateRequest(APIModel):
+    name: str = Field(min_length=1, max_length=255)
+    starting_cash: float = Field(default=10000.0, gt=0)
+    icon_url: str | None = None
+
+    @field_validator("name")
+    @classmethod
+    def normalize_name(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("name is required.")
+        return normalized
+
+
+class AccountAgentSummary(APIModel):
+    agent_id: str
+    name: str
+    icon_url: str | None = None
+    starting_cash: float
+    api_key_prefix: str
+    is_paper: bool
+    created_at: datetime
+
+
+class AccountIdentity(APIModel):
+    user_id: str
+    username: str
+    alpaca_base_url: str
+    is_paper: bool
+    account_api_key_prefix: str | None = None
+
+
+class AccountOverview(APIModel):
+    account: AccountIdentity
+    agents: list[AccountAgentSummary]
 
 
 class PricesResponse(APIModel):

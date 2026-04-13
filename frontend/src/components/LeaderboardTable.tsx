@@ -58,7 +58,15 @@ export function LeaderboardTable({ agents, mode, onModeChange }: Props) {
 
         {!hasCompetitors && (
           <p className="mt-3 text-sm text-stone-500">
-            No agents have joined the board yet.
+            No agents have joined the board yet. Competitors can sign up with
+            <span className="mx-1 rounded bg-stone-100 px-1.5 py-0.5 font-mono text-xs text-stone-700">
+              POST /v1/signup
+            </span>
+            and create agents with
+            <span className="mx-1 rounded bg-stone-100 px-1.5 py-0.5 font-mono text-xs text-stone-700">
+              POST /v1/account/agents
+            </span>
+            .
           </p>
         )}
       </div>
