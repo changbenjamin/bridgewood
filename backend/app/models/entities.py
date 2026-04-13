@@ -5,36 +5,20 @@ from datetime import datetime
 from decimal import Decimal
 from enum import Enum
 
-from sqlalchemy import (
-    JSON,
-    Boolean,
-    DateTime,
-    Enum as SqlEnum,
-    ForeignKey,
-    Numeric,
-    String,
-    Text,
-    UniqueConstraint,
-)
+from sqlalchemy import DateTime, Enum as SqlEnum, ForeignKey, Numeric, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.session import Base
 
 
-class TradeSide(str, Enum):
+class TradingMode(str, Enum):
+    PAPER = "paper"
+    LIVE = "live"
+
+
+class ExecutionSide(str, Enum):
     BUY = "buy"
     SELL = "sell"
-
-
-class TradeStatus(str, Enum):
-    PENDING = "pending"
-    FILLED = "filled"
-    REJECTED = "rejected"
-
-
-class ActivityEventType(str, Enum):
-    TRADE = "trade"
-    CYCLE_SUMMARY = "cycle_summary"
 
 
 def uuid_str() -> str:
@@ -46,17 +30,10 @@ class User(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
     username: Mapped[str] = mapped_column(String(120), unique=True, nullable=False)
-    account_api_key_hash: Mapped[str | None] = mapped_column(
-        String(64), unique=True, index=True
+    account_api_key_hash: Mapped[str] = mapped_column(
+        String(64), unique=True, index=True, nullable=False
     )
-    account_api_key_prefix: Mapped[str | None] = mapped_column(String(16))
-    alpaca_paper_api_key: Mapped[str | None] = mapped_column(Text)
-    alpaca_paper_secret_key: Mapped[str | None] = mapped_column(Text)
-    alpaca_live_api_key: Mapped[str | None] = mapped_column(Text)
-    alpaca_live_secret_key: Mapped[str | None] = mapped_column(Text)
-    alpaca_api_key: Mapped[str] = mapped_column(Text, nullable=False)
-    alpaca_secret_key: Mapped[str] = mapped_column(Text, nullable=False)
-    alpaca_base_url: Mapped[str] = mapped_column(String(255), nullable=False)
+    account_api_key_prefix: Mapped[str] = mapped_column(String(16), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, nullable=False
     )
@@ -76,44 +53,52 @@ class Agent(Base):
     api_key_prefix: Mapped[str] = mapped_column(String(16), nullable=False)
     starting_cash: Mapped[Decimal] = mapped_column(Numeric(18, 6), nullable=False)
     icon_url: Mapped[str | None] = mapped_column(String(500))
-    real_money: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
-    is_paper: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    trading_mode: Mapped[TradingMode] = mapped_column(
+        SqlEnum(TradingMode), nullable=False, default=TradingMode.PAPER
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, nullable=False
     )
 
     user: Mapped[User] = relationship(back_populates="agents")
-    trades: Mapped[list["Trade"]] = relationship(back_populates="agent")
+    executions: Mapped[list["Execution"]] = relationship(back_populates="agent")
     positions: Mapped[list["Position"]] = relationship(back_populates="agent")
 
+    @property
+    def is_paper(self) -> bool:
+        return self.trading_mode == TradingMode.PAPER
 
-class Trade(Base):
-    __tablename__ = "trades"
+
+class Execution(Base):
+    __tablename__ = "executions"
+    __table_args__ = (
+        UniqueConstraint(
+            "agent_id",
+            "external_order_id",
+            name="uq_executions_agent_external_order_id",
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
     agent_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("agents.id"), nullable=False, index=True
     )
+    external_order_id: Mapped[str] = mapped_column(String(255), nullable=False)
     symbol: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
-    side: Mapped[TradeSide] = mapped_column(SqlEnum(TradeSide), nullable=False)
-    amount_dollars: Mapped[Decimal] = mapped_column(Numeric(18, 6), nullable=False)
-    quantity: Mapped[Decimal | None] = mapped_column(Numeric(18, 9))
-    price_per_share: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
-    filled_total: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
-    realized_pnl: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
-    alpaca_order_id: Mapped[str | None] = mapped_column(String(128))
-    client_order_id: Mapped[str] = mapped_column(
-        String(255), unique=True, nullable=False
+    side: Mapped[ExecutionSide] = mapped_column(SqlEnum(ExecutionSide), nullable=False)
+    quantity: Mapped[Decimal] = mapped_column(Numeric(18, 9), nullable=False)
+    price_per_share: Mapped[Decimal] = mapped_column(Numeric(18, 6), nullable=False)
+    gross_notional: Mapped[Decimal] = mapped_column(Numeric(18, 6), nullable=False)
+    fees: Mapped[Decimal] = mapped_column(Numeric(18, 6), nullable=False, default=0)
+    realized_pnl: Mapped[Decimal] = mapped_column(
+        Numeric(18, 6), nullable=False, default=0
     )
-    rationale: Mapped[str | None] = mapped_column(Text)
-    status: Mapped[TradeStatus] = mapped_column(SqlEnum(TradeStatus), nullable=False)
-    rejection_reason: Mapped[str | None] = mapped_column(Text)
-    executed_at: Mapped[datetime | None] = mapped_column(DateTime)
+    executed_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.utcnow, nullable=False
+        DateTime, default=datetime.utcnow, nullable=False, index=True
     )
 
-    agent: Mapped[Agent] = relationship(back_populates="trades")
+    agent: Mapped[Agent] = relationship(back_populates="executions")
 
 
 class Position(Base):
@@ -147,26 +132,6 @@ class PortfolioSnapshot(Base):
     pnl: Mapped[Decimal] = mapped_column(Numeric(18, 6), nullable=False)
     return_pct: Mapped[Decimal] = mapped_column(Numeric(18, 6), nullable=False)
     snapshot_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
-
-
-class ActivityLog(Base):
-    __tablename__ = "activity_log"
-
-    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    agent_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("agents.id"), nullable=False, index=True
-    )
-    event_type: Mapped[ActivityEventType] = mapped_column(
-        SqlEnum(ActivityEventType), nullable=False
-    )
-    summary: Mapped[str] = mapped_column(Text, nullable=False)
-    metadata_json: Mapped[dict] = mapped_column(
-        "metadata", JSON, nullable=False, default=dict
-    )
-    cost_tokens: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.utcnow, nullable=False, index=True
-    )
 
 
 class BenchmarkState(Base):

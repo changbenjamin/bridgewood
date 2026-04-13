@@ -13,10 +13,9 @@ from app.models.entities import (
     Agent,
     BenchmarkSnapshot,
     BenchmarkState,
+    Execution,
+    ExecutionSide,
     PortfolioSnapshot,
-    Trade,
-    TradeSide,
-    TradeStatus,
 )
 from app.schemas.api import LeaderboardEntry, LeaderboardPayload, SnapshotPoint
 from app.services.portfolio_engine import build_portfolio
@@ -35,6 +34,10 @@ def _benchmark_name(symbol: str) -> str:
         if symbol == settings.benchmark_symbol
         else f"{symbol} Benchmark"
     )
+
+
+def _display_name(agent: Agent) -> str:
+    return f"{agent.name}{' *' if agent.is_paper else ''}"
 
 
 def get_daily_change_pct(db: Session, agent: Agent) -> float:
@@ -105,31 +108,29 @@ def build_leaderboard_payload(
     for agent in agents:
         portfolio = build_portfolio(db, agent, prices)
         max_win = db.scalar(
-            select(func.max(Trade.realized_pnl)).where(
-                Trade.agent_id == agent.id,
-                Trade.status == TradeStatus.FILLED,
-                Trade.side == TradeSide.SELL,
+            select(func.max(Execution.realized_pnl)).where(
+                Execution.agent_id == agent.id,
+                Execution.side == ExecutionSide.SELL,
             )
         )
         max_loss = db.scalar(
-            select(func.min(Trade.realized_pnl)).where(
-                Trade.agent_id == agent.id,
-                Trade.status == TradeStatus.FILLED,
-                Trade.side == TradeSide.SELL,
+            select(func.min(Execution.realized_pnl)).where(
+                Execution.agent_id == agent.id,
+                Execution.side == ExecutionSide.SELL,
             )
         )
-        trade_count = (
+        execution_count = (
             db.scalar(
                 select(func.count())
-                .select_from(Trade)
-                .where(Trade.agent_id == agent.id)
+                .select_from(Execution)
+                .where(Execution.agent_id == agent.id)
             )
             or 0
         )
         entries.append(
             LeaderboardEntry(
                 id=agent.id,
-                name=f"{agent.name}{' *' if agent.is_paper else ''}",
+                name=_display_name(agent),
                 icon_url=agent.icon_url,
                 cash=portfolio.cash,
                 total_value=portfolio.total_value,
@@ -138,7 +139,7 @@ def build_leaderboard_payload(
                 sharpe=round(compute_sharpe(db, agent.id), 2),
                 max_win=float(max_win or 0),
                 max_loss=float(max_loss or 0),
-                trade_count=trade_count,
+                execution_count=execution_count,
                 daily_change_pct=round(get_daily_change_pct(db, agent), 2),
             )
         )
@@ -163,7 +164,7 @@ def build_leaderboard_payload(
                     sharpe=0.0,
                     max_win=0.0,
                     max_loss=0.0,
-                    trade_count=0,
+                    execution_count=0,
                     is_benchmark=True,
                     daily_change_pct=0.0,
                 )
@@ -202,7 +203,7 @@ def build_snapshot_series(db: Session, range_key: str) -> list[SnapshotPoint]:
         points.append(
             SnapshotPoint(
                 agent_id=agent.id,
-                name=f"{agent.name}{' *' if agent.is_paper else ''}",
+                name=_display_name(agent),
                 total_value=float(snapshot.total_value),
                 snapshot_at=snapshot.snapshot_at,
                 icon_url=agent.icon_url,

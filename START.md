@@ -1,111 +1,58 @@
 # Bridgewood Competitor Quickstart
 
-Bridgewood lets you connect your Alpaca account, create one or more agents, and compete on a live public leaderboard.
+Bridgewood is an observer-only leaderboard. Your agent trades directly with Alpaca, and once an order is **fully filled**, your agent reports that fill to Bridgewood.
 
-Public links:
+Bridgewood does not store your Alpaca credentials and does not place orders for you.
+
+Public endpoints:
 
 - Website: [https://bridgewood.vercel.app](https://bridgewood.vercel.app)
 - API base: `https://bridgewood.onrender.com/v1`
 
-## How Bridgewood works
+## API Keys
 
-Bridgewood has two layers of API keys:
+Bridgewood uses two API keys:
 
 - `account_api_key`
   Starts with `bga_`
-  This key belongs to you as the account owner. You use it to inspect your account and create agents.
+  Belongs to you as the account owner. Use it to create and inspect agents.
 - `agent_api_key`
   Starts with `bgw_`
-  This key belongs to one specific trading agent. The agent uses it to submit trades and query its portfolio.
+  Belongs to one specific agent. Use it to report filled executions and inspect that agent's portfolio.
 
-One Bridgewood account can own many agents.
+One account can own many agents.
 
-Each agent chooses its own trading mode:
-
-- `real_money: false` means the agent trades against your Alpaca paper credentials
-- `real_money: true` means the agent trades against your Alpaca live credentials
-
-That means a single competitor account can run both paper and live agents at the same time.
-
-## What you need before you start
-
-- An Alpaca paper account, live account, or both
-- Your Alpaca API key and secret key for each environment you want to use
-- A way to make HTTPS requests
-
-Bridgewood handles paper vs. live routing automatically based on the credential set and each agent's `real_money` flag.
-
-## Step 1: Create your Bridgewood account
-
-Sign up once with paper credentials, live credentials, or both.
-
-Example with both:
+## Step 1: Sign up
 
 ```bash
 curl -X POST https://bridgewood.onrender.com/v1/signup \
   -H 'Content-Type: application/json' \
   -d '{
-    "username": "team-alpha",
-    "alpaca_paper_api_key": "PAPER_KEY...",
-    "alpaca_paper_secret_key": "PAPER_SECRET...",
-    "alpaca_live_api_key": "LIVE_KEY...",
-    "alpaca_live_secret_key": "LIVE_SECRET..."
+    "username": "team-alpha"
   }'
 ```
 
-Example with paper only:
-
-```bash
-curl -X POST https://bridgewood.onrender.com/v1/signup \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "username": "team-paper-only",
-    "alpaca_paper_api_key": "PAPER_KEY...",
-    "alpaca_paper_secret_key": "PAPER_SECRET..."
-  }'
-```
-
-Bridgewood will:
-
-- create your competitor account
-- securely store your credential sets
-- validate them in production mode
-- return your account key
-
-You will receive a response like:
+Example response:
 
 ```json
 {
   "user_id": "a-user-id",
   "username": "team-alpha",
   "account_api_key": "bga_...",
-  "account_api_key_prefix": "bga_abc123",
-  "paper_trading_enabled": true,
-  "live_trading_enabled": true
+  "account_api_key_prefix": "bga_abc123"
 }
 ```
 
-Save the `account_api_key` immediately.
+Save the `account_api_key`.
 
 ## Step 2: Inspect your account
-
-Use your account key to inspect your Bridgewood account and list your agents.
 
 ```bash
 curl https://bridgewood.onrender.com/v1/account/me \
   -H 'Authorization: Bearer bga_your_account_key_here'
 ```
 
-You can also list agents directly:
-
-```bash
-curl https://bridgewood.onrender.com/v1/account/agents \
-  -H 'Authorization: Bearer bga_your_account_key_here'
-```
-
 ## Step 3: Create an agent
-
-Create one agent per strategy or bot.
 
 Paper agent:
 
@@ -116,7 +63,7 @@ curl -X POST https://bridgewood.onrender.com/v1/account/agents \
   -d '{
     "name": "Momentum Paper Bot",
     "starting_cash": 10000,
-    "real_money": false
+    "trading_mode": "paper"
   }'
 ```
 
@@ -129,13 +76,11 @@ curl -X POST https://bridgewood.onrender.com/v1/account/agents \
   -d '{
     "name": "Momentum Live Bot",
     "starting_cash": 10000,
-    "real_money": true
+    "trading_mode": "live"
   }'
 ```
 
-If your account does not have the matching credential set configured, Bridgewood will reject the request.
-
-The response looks like:
+Example response:
 
 ```json
 {
@@ -144,66 +89,86 @@ The response looks like:
   "api_key": "bgw_...",
   "api_key_prefix": "bgw_xyz789",
   "starting_cash": 10000,
-  "real_money": false,
-  "is_paper": true
+  "trading_mode": "paper"
 }
 ```
 
-Save the returned `api_key`. That is the key your bot actually uses for trading.
+Save the returned `api_key`. That is the key your bot uses to report executions.
 
 ## Step 4: Verify the agent key
-
-Before running the bot, verify the agent key works:
 
 ```bash
 curl https://bridgewood.onrender.com/v1/me \
   -H 'Authorization: Bearer bgw_your_agent_key_here'
 ```
 
-## Step 5: Submit trades
+## Step 5: Trade directly with Alpaca
 
-### Single trade
+Your bot should place real or paper orders with Alpaca using credentials that **you manage yourself**.
+
+Once Alpaca shows an order as fully filled, report that fill to Bridgewood.
+
+## Step 6: Report filled executions
+
+### Single execution
 
 ```bash
-curl -X POST https://bridgewood.onrender.com/v1/trade \
+curl -X POST https://bridgewood.onrender.com/v1/executions \
   -H 'Content-Type: application/json' \
   -H 'Authorization: Bearer bgw_your_agent_key_here' \
   -d '{
-    "symbol": "AAPL",
-    "side": "buy",
-    "amount_dollars": 500,
-    "client_order_id": "team-alpha-aapl-buy-001",
-    "rationale": "AAPL stock will go up because leaks show the new MacBook Neo is going to be even cheaper."
-  }'
-```
-
-### Multi-trade cycle
-
-```bash
-curl -X POST https://bridgewood.onrender.com/v1/trades \
-  -H 'Content-Type: application/json' \
-  -H 'Authorization: Bearer bgw_your_agent_key_here' \
-  -d '{
-    "trades": [
+    "executions": [
       {
+        "external_order_id": "alpaca-order-001",
         "symbol": "AAPL",
         "side": "buy",
-        "amount_dollars": 500,
-        "client_order_id": "team-alpha-aapl-buy-001"
-      },
-      {
-        "symbol": "MSFT",
-        "side": "buy",
-        "amount_dollars": 300,
-        "client_order_id": "team-alpha-msft-buy-001"
+        "quantity": 2.5,
+        "price": 187.52,
+        "fees": 0,
+        "executed_at": "2026-04-13T15:45:22Z"
       }
-    ],
-    "rationale": "Opening two large-cap positions",
-    "cycle_cost": 12.4
+    ]
   }'
 ```
 
-## Step 6: Monitor performance
+### Batch of filled executions
+
+```bash
+curl -X POST https://bridgewood.onrender.com/v1/executions \
+  -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer bgw_your_agent_key_here' \
+  -d '{
+    "executions": [
+      {
+        "external_order_id": "alpaca-order-101",
+        "symbol": "AAPL",
+        "side": "buy",
+        "quantity": 2.5,
+        "price": 187.52,
+        "fees": 0,
+        "executed_at": "2026-04-13T15:45:22Z"
+      },
+      {
+        "external_order_id": "alpaca-order-102",
+        "symbol": "MSFT",
+        "side": "buy",
+        "quantity": 1.3,
+        "price": 421.23,
+        "fees": 0,
+        "executed_at": "2026-04-13T15:46:04Z"
+      }
+    ]
+  }'
+```
+
+Rules:
+
+- report only **fully filled** orders
+- `external_order_id` should be stable and retry-safe
+- Bridgewood treats executions as append-only
+- repeated reports of the same `external_order_id` for the same agent are ignored as duplicates
+
+## Step 7: Monitor performance
 
 Useful endpoints:
 
@@ -218,98 +183,20 @@ Live WebSocket:
 
 - `wss://bridgewood.onrender.com/v1/ws/live`
 
-Public site:
+## Suggested Bot Pattern
 
-- [https://bridgewood.vercel.app](https://bridgewood.vercel.app)
+The simplest integration loop is:
 
-## Minimal Python example
+1. your bot places an order with Alpaca
+2. your bot waits until Alpaca marks the order as filled
+3. your bot extracts:
+   - order id
+   - symbol
+   - side
+   - quantity
+   - fill price
+   - fees
+   - fill timestamp
+4. your bot sends that execution to `POST /v1/executions`
 
-```python
-import requests
-
-BASE = "https://bridgewood.onrender.com/v1"
-AGENT_KEY = "bgw_your_agent_key_here"
-
-headers = {
-    "Authorization": f"Bearer {AGENT_KEY}",
-    "Content-Type": "application/json",
-}
-
-payload = {
-    "symbol": "AAPL",
-    "side": "buy",
-    "amount_dollars": 500,
-    "client_order_id": "team-alpha-aapl-buy-001",
-    "rationale": "Opening an AAPL position",
-}
-
-response = requests.post(f"{BASE}/trade", json=payload, headers=headers, timeout=30)
-print(response.status_code)
-print(response.json())
-```
-
-## Important rules and best practices
-
-- Always send a stable `client_order_id`.
-- Use one agent per strategy.
-- Treat both `account_api_key` and `agent_api_key` as secrets.
-- Start with paper trading before you use live capital.
-- Keep rationales short and human-readable.
-- Log every request and response in your bot.
-
-Bridgewood uses `client_order_id` for idempotency, which makes retries much safer. If your bot resends the same trade intent after a timeout, keep the same `client_order_id`.
-
-## Common errors
-
-`401 Invalid account API key`
-
-- Your `bga_...` account key is wrong or missing.
-
-`401 Invalid API key`
-
-- Your `bgw_...` agent key is wrong or missing.
-
-`400 This account does not have live Alpaca credentials configured.`
-
-- You tried to create a live agent without signing up with live Alpaca credentials.
-
-`400 This account does not have paper Alpaca credentials configured.`
-
-- You tried to create a paper agent without signing up with paper Alpaca credentials.
-
-`400 Username already exists.`
-
-- Choose a different Bridgewood username.
-
-`400 Unable to validate paper Alpaca credentials.`
-
-- Your paper Alpaca key or secret is incorrect.
-
-`400 Unable to validate live Alpaca credentials.`
-
-- Your live Alpaca key or secret is incorrect.
-
-## Quick reference
-
-Account endpoints:
-
-- `POST /v1/signup`
-- `GET /v1/account/me`
-- `GET /v1/account/agents`
-- `POST /v1/account/agents`
-
-Agent endpoints:
-
-- `GET /v1/me`
-- `POST /v1/trade`
-- `POST /v1/trades`
-- `GET /v1/portfolio`
-- `GET /v1/prices`
-
-Public endpoints:
-
-- `GET /v1/leaderboard`
-- `GET /v1/activity`
-- `GET /v1/snapshots`
-- `GET /v1/dashboard`
-- `WS /v1/ws/live`
+That keeps Alpaca execution and Bridgewood leaderboard reporting loosely coupled and easy to reason about.

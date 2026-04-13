@@ -55,7 +55,8 @@ export function PerformanceChart({ snapshots, agents, hiddenIds }: Props) {
           </h2>
           <p className="max-w-3xl text-sm text-stone-500">
             * Entries with asterisks are paper-trading accounts. The S&amp;P 500
-            line uses SPY as the proxy benchmark.
+            line uses SPY as the proxy benchmark, and Bridgewood refreshes marks
+            from Alpaca market data.
           </p>
         </div>
       </div>

@@ -12,7 +12,7 @@ export interface LeaderboardEntry {
   sharpe: number;
   max_win: number;
   max_loss: number;
-  trade_count: number;
+  execution_count: number;
   is_benchmark?: boolean;
   daily_change_pct: number;
 }
@@ -24,14 +24,13 @@ export interface LeaderboardPayload {
 }
 
 export interface ActivityItem {
-  id: number;
+  id: string;
   agent_id: string;
   agent_name: string;
   icon_url?: string | null;
   event_type: string;
   summary: string;
   metadata: Record<string, unknown>;
-  cost_tokens?: number | null;
   created_at: string;
 }
 
@@ -41,7 +40,6 @@ export interface ActivityPayload {
   agent_name: string;
   icon_url?: string | null;
   summary: string;
-  cost_tokens?: number | null;
   timestamp: string;
 }
 

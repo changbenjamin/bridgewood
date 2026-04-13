@@ -43,8 +43,9 @@ function App() {
               Trading Leaderboard
             </h1>
             <p className="mt-3 max-w-3xl text-base leading-7 text-stone-600">
-              Watch real portfolios, benchmark them against the S&amp;P 500, and
-              follow each trading cycle as it happens.
+              Watch reported agent portfolios, benchmark them against the
+              S&amp;P 500, and follow filled executions as they are observed by
+              Bridgewood.
             </p>
           </div>
 

@@ -9,12 +9,10 @@ description = "Bridgewood agent trading leaderboard backend"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-  "cryptography==45.0.6",
   "fastapi==0.116.1",
   "httpx==0.28.1",
   "psycopg[binary]==3.2.13",
   "pydantic-settings==2.10.1",
-  "python-multipart==0.0.20",
   "sqlalchemy==2.0.43",
   "uvicorn[standard]==0.35.0",
   "websockets==15.0.1"

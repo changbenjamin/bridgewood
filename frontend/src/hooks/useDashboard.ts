@@ -74,14 +74,13 @@ function leaderboardToSnapshots(
 
 function toActivityItem(event: ActivityPayload): ActivityItem {
   return {
-    id: Date.parse(event.timestamp) + event.agent_id.length,
+    id: `${event.agent_id}:${event.timestamp}`,
     agent_id: event.agent_id,
     agent_name: event.agent_name,
     icon_url: event.icon_url,
-    event_type: "cycle_summary",
+    event_type: "execution",
     summary: event.summary,
     metadata: {},
-    cost_tokens: event.cost_tokens,
     created_at: event.timestamp,
   };
 }

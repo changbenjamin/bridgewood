@@ -3,30 +3,11 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timedelta
 from decimal import Decimal
-from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 
-from app.core.config import get_settings
-from app.models.entities import (
-    Agent,
-    BenchmarkSnapshot,
-    BenchmarkState,
-    PortfolioSnapshot,
-)
+from app.models.entities import Agent, BenchmarkSnapshot, BenchmarkState, PortfolioSnapshot
 from app.services.portfolio_engine import build_portfolio
-
-
-settings = get_settings()
-
-
-def is_market_hours(now: datetime | None = None) -> bool:
-    current = (now or datetime.utcnow()).astimezone(ZoneInfo("America/New_York"))
-    if current.weekday() >= 5:
-        return False
-    opening = current.replace(hour=9, minute=30, second=0, microsecond=0)
-    closing = current.replace(hour=16, minute=0, second=0, microsecond=0)
-    return opening <= current <= closing
 
 
 class SnapshotWorker:
@@ -62,18 +43,17 @@ class SnapshotWorker:
     async def maybe_snapshot(self) -> None:
         now = datetime.utcnow().replace(second=0, microsecond=0)
         slot = now - timedelta(minutes=now.minute % self.interval_minutes)
-        should_capture = settings.mock_broker_mode or is_market_hours(now)
-        if not should_capture or self._last_slot == slot:
+        if self._last_slot == slot:
             return
 
         if not self.price_feed_service.snapshot():
             await self.price_feed_service.refresh_once()
 
         prices = self.price_feed_service.snapshot()
+        captured = False
+
         with self.session_factory() as db:
-            for agent in db.scalars(
-                select(Agent).order_by(Agent.created_at.asc())
-            ).all():
+            for agent in db.scalars(select(Agent).order_by(Agent.created_at.asc())).all():
                 portfolio = build_portfolio(db, agent, prices)
                 db.add(
                     PortfolioSnapshot(
@@ -85,6 +65,7 @@ class SnapshotWorker:
                         snapshot_at=slot,
                     )
                 )
+                captured = True
 
             benchmark_state = db.get(BenchmarkState, 1)
             if benchmark_state and benchmark_state.symbol in prices:
@@ -105,6 +86,10 @@ class SnapshotWorker:
                         snapshot_at=slot,
                     )
                 )
+                captured = True
 
-            db.commit()
-        self._last_slot = slot
+            if captured:
+                db.commit()
+
+        if captured:
+            self._last_slot = slot

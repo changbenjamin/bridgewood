@@ -84,7 +84,7 @@ export function LeaderboardTable({ agents, mode, onModeChange }: Props) {
               <th className="px-3 py-4">Sharpe</th>
               <th className="px-3 py-4">Max Win</th>
               <th className="px-3 py-4">Max Loss</th>
-              <th className="px-3 py-4 text-right">Trades</th>
+              <th className="px-3 py-4 text-right">Executions</th>
             </tr>
           </thead>
           <tbody>
@@ -143,7 +143,7 @@ export function LeaderboardTable({ agents, mode, onModeChange }: Props) {
                   {formatSignedCurrency(agent.max_loss)}
                 </td>
                 <td className="px-3 py-5 text-right">
-                  {formatCount(agent.trade_count)}
+                  {formatCount(agent.execution_count)}
                 </td>
               </tr>
             ))}

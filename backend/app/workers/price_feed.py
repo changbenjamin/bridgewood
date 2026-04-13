@@ -7,16 +7,11 @@ from decimal import Decimal
 from sqlalchemy import select
 
 from app.core.config import get_settings
-from app.models.entities import BenchmarkState, Position, User
+from app.models.entities import Position
 from app.schemas.api import LeaderboardPayload
-from app.services.alpaca_client import (
-    AlpacaCredentials,
-    get_broker_gateway,
-    get_live_benchmark_price,
-)
 from app.services.broadcaster import ConnectionManager
 from app.services.leaderboard import build_leaderboard_payload
-from app.services.security import decrypt_secret
+from app.services.market_data import MarketDataClient, MarketDataError
 
 
 class PriceFeedService:
@@ -29,7 +24,7 @@ class PriceFeedService:
         self.session_factory = session_factory
         self.connection_manager = connection_manager
         self.refresh_seconds = refresh_seconds
-        self.gateway = get_broker_gateway()
+        self.market_data = MarketDataClient()
         self.prices: dict[str, Decimal] = {}
         self.last_updated_at: datetime = datetime.utcnow()
         self._task: asyncio.Task | None = None
@@ -53,47 +48,27 @@ class PriceFeedService:
     def as_float_map(self) -> dict[str, float]:
         return {symbol: float(price) for symbol, price in self.prices.items()}
 
-    async def refresh_once(self) -> LeaderboardPayload | None:
+    async def refresh_symbols(self, symbols: list[str]) -> dict[str, Decimal]:
+        try:
+            latest = await self.market_data.get_latest_prices(symbols)
+        except (MarketDataError, Exception):
+            return {}
+
+        if latest:
+            self.prices.update(latest)
+            self.last_updated_at = datetime.utcnow()
+        return latest
+
+    async def refresh_once(self) -> LeaderboardPayload:
         with self.session_factory() as db:
-            benchmark_symbol = self.settings.benchmark_symbol
             symbols = {
                 position.symbol for position in db.scalars(select(Position)).all()
             }
-            benchmark_state = db.get(BenchmarkState, 1)
-            if benchmark_state:
-                symbols.add(benchmark_state.symbol)
-            symbols.add(benchmark_symbol)
-            if not symbols:
-                return None
+            symbols.add(self.settings.benchmark_symbol)
 
-            credentials = self._get_any_credentials(db)
-            non_benchmark_symbols = sorted(
-                symbol for symbol in symbols if symbol != benchmark_symbol
-            )
+        await self.refresh_symbols(sorted(symbols))
 
-            if non_benchmark_symbols and hasattr(self.gateway, "advance_prices"):
-                maybe_prices = await self.gateway.advance_prices(non_benchmark_symbols)
-                if maybe_prices:
-                    self.prices.update(maybe_prices)
-
-            if non_benchmark_symbols:
-                latest = await self.gateway.get_latest_prices(
-                    credentials, non_benchmark_symbols
-                )
-                self.prices.update(latest)
-
-            benchmark_price = await get_live_benchmark_price(
-                benchmark_symbol, credentials
-            )
-            if benchmark_price is None:
-                if benchmark_symbol in self.prices:
-                    benchmark_price = self.prices[benchmark_symbol]
-                elif benchmark_state is not None:
-                    benchmark_price = Decimal(str(benchmark_state.starting_price))
-            if benchmark_price is not None:
-                self.prices[benchmark_symbol] = benchmark_price
-
-            self.last_updated_at = datetime.utcnow()
+        with self.session_factory() as db:
             payload = build_leaderboard_payload(
                 db, self.prices, timestamp=self.last_updated_at
             )
@@ -108,47 +83,3 @@ class PriceFeedService:
             except Exception:
                 pass
             await asyncio.sleep(self.refresh_seconds)
-
-    @staticmethod
-    def _legacy_looks_paper(base_url: str | None) -> bool:
-        return bool(base_url and "paper" in base_url.lower())
-
-    @staticmethod
-    def _decrypt_optional_secret(value: str | None) -> str | None:
-        return decrypt_secret(value) if value is not None else None
-
-    def _get_any_credentials(self, db) -> AlpacaCredentials | None:
-        user = db.scalar(select(User).order_by(User.created_at.asc()))
-        if user is None:
-            return None
-
-        paper_api_key = self._decrypt_optional_secret(user.alpaca_paper_api_key)
-        paper_secret_key = self._decrypt_optional_secret(user.alpaca_paper_secret_key)
-        if paper_api_key and paper_secret_key:
-            return AlpacaCredentials(
-                api_key=paper_api_key,
-                secret_key=paper_secret_key,
-                base_url=self.settings.alpaca_paper_trading_url,
-            )
-
-        live_api_key = self._decrypt_optional_secret(user.alpaca_live_api_key)
-        live_secret_key = self._decrypt_optional_secret(user.alpaca_live_secret_key)
-        if live_api_key and live_secret_key:
-            return AlpacaCredentials(
-                api_key=live_api_key,
-                secret_key=live_secret_key,
-                base_url=self.settings.alpaca_live_trading_url,
-            )
-
-        if user.alpaca_api_key and user.alpaca_secret_key:
-            return AlpacaCredentials(
-                api_key=decrypt_secret(user.alpaca_api_key),
-                secret_key=decrypt_secret(user.alpaca_secret_key),
-                base_url=(
-                    self.settings.alpaca_paper_trading_url
-                    if self._legacy_looks_paper(user.alpaca_base_url)
-                    else self.settings.alpaca_live_trading_url
-                ),
-            )
-
-        return None

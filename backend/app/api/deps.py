@@ -4,13 +4,9 @@ from fastapi import Depends, Header, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.core.config import get_settings
 from app.db.session import get_db
 from app.models.entities import Agent, User
 from app.services.security import hash_api_key
-
-
-settings = get_settings()
 
 
 def _extract_bearer_token(authorization: str | None) -> str:
@@ -48,10 +44,3 @@ def get_current_account_user(
             detail="Invalid account API key.",
         )
     return user
-
-
-def require_admin(x_admin_token: str | None = Header(default=None)) -> None:
-    if x_admin_token != settings.admin_token:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid admin token."
-        )

@@ -12,12 +12,10 @@ services:
         fromDatabase:
           name: bridgewood-db
           property: connectionString
-      - key: ADMIN_TOKEN
-        generateValue: true
-      - key: FERNET_KEY
+      - key: ALPACA_API_KEY
         sync: false
-      - key: MOCK_BROKER_MODE
-        value: "false"
+      - key: ALPACA_SECRET_KEY
+        sync: false
       - key: PRICE_REFRESH_SECONDS
         value: "15"
       - key: SNAPSHOT_INTERVAL_MINUTES

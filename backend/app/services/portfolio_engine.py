@@ -1,52 +1,70 @@
 from __future__ import annotations
 
-from collections import defaultdict
 from datetime import datetime
 from decimal import Decimal, ROUND_HALF_UP
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.models.entities import Agent, Position, Trade, TradeSide, TradeStatus
+from app.models.entities import Agent, Execution, ExecutionSide, Position
 from app.schemas.api import PortfolioView, PositionView
 
 
 MONEY = Decimal("0.01")
-SHARES = Decimal("0.000001")
+NOTIONAL = Decimal("0.000001")
+PRICE = Decimal("0.000001")
+QUANTITY = Decimal("0.000000001")
 
 
 def money(value: Decimal) -> Decimal:
     return value.quantize(MONEY, rounding=ROUND_HALF_UP)
 
 
-def shares(value: Decimal) -> Decimal:
-    return value.quantize(SHARES, rounding=ROUND_HALF_UP)
+def notional(value: Decimal) -> Decimal:
+    return value.quantize(NOTIONAL, rounding=ROUND_HALF_UP)
+
+
+def price_value(value: Decimal) -> Decimal:
+    return value.quantize(PRICE, rounding=ROUND_HALF_UP)
+
+
+def quantity_value(value: Decimal) -> Decimal:
+    return value.quantize(QUANTITY, rounding=ROUND_HALF_UP)
 
 
 def scalar_decimal(value: Decimal | None) -> Decimal:
     return value if value is not None else Decimal("0")
 
 
+def gross_notional(quantity: Decimal, price: Decimal) -> Decimal:
+    return notional(quantity * price)
+
+
 def compute_cash(db: Session, agent: Agent) -> Decimal:
     buy_total = scalar_decimal(
         db.scalar(
-            select(func.sum(Trade.filled_total)).where(
-                Trade.agent_id == agent.id,
-                Trade.status == TradeStatus.FILLED,
-                Trade.side == TradeSide.BUY,
+            select(func.sum(Execution.gross_notional)).where(
+                Execution.agent_id == agent.id,
+                Execution.side == ExecutionSide.BUY,
             )
         )
     )
     sell_total = scalar_decimal(
         db.scalar(
-            select(func.sum(Trade.filled_total)).where(
-                Trade.agent_id == agent.id,
-                Trade.status == TradeStatus.FILLED,
-                Trade.side == TradeSide.SELL,
+            select(func.sum(Execution.gross_notional)).where(
+                Execution.agent_id == agent.id,
+                Execution.side == ExecutionSide.SELL,
             )
         )
     )
-    return money(Decimal(agent.starting_cash) - buy_total + sell_total)
+    fees_total = scalar_decimal(
+        db.scalar(
+            select(func.sum(Execution.fees)).where(
+                Execution.agent_id == agent.id,
+            )
+        )
+    )
+    return money(Decimal(agent.starting_cash) - buy_total + sell_total - fees_total)
 
 
 def get_positions(db: Session, agent_id: str) -> list[Position]:
@@ -98,25 +116,26 @@ def build_portfolio(
     )
 
 
-def apply_fill_to_position(
+def apply_execution_to_position(
     db: Session,
     *,
     agent_id: str,
     symbol: str,
-    side: TradeSide,
+    side: ExecutionSide,
     quantity: Decimal,
     price: Decimal,
+    fees: Decimal,
 ) -> Decimal:
     position = db.get(Position, {"agent_id": agent_id, "symbol": symbol})
     realized_pnl = Decimal("0")
 
-    if side == TradeSide.BUY:
+    if side == ExecutionSide.BUY:
         if position is None:
             position = Position(
                 agent_id=agent_id,
                 symbol=symbol,
-                quantity=shares(quantity),
-                avg_cost_basis=money(price),
+                quantity=quantity_value(quantity),
+                avg_cost_basis=price_value(price),
                 updated_at=datetime.utcnow(),
             )
             db.add(position)
@@ -124,8 +143,8 @@ def apply_fill_to_position(
 
         current_qty = Decimal(position.quantity)
         current_avg = Decimal(position.avg_cost_basis)
-        new_quantity = shares(current_qty + quantity)
-        new_avg_cost = money(
+        new_quantity = quantity_value(current_qty + quantity)
+        new_avg_cost = price_value(
             ((current_qty * current_avg) + (quantity * price)) / new_quantity
         )
         position.quantity = new_quantity
@@ -137,32 +156,16 @@ def apply_fill_to_position(
         raise ValueError(f"No position available to sell for {symbol}.")
 
     current_qty = Decimal(position.quantity)
-    if quantity > current_qty + Decimal("0.000001"):
+    if quantity > current_qty + QUANTITY:
         raise ValueError(f"Insufficient quantity to sell {quantity} {symbol}.")
 
-    realized_pnl = money((price - Decimal(position.avg_cost_basis)) * quantity)
-    remaining = shares(max(current_qty - quantity, Decimal("0")))
-    if remaining <= Decimal("0.000000"):
+    realized_pnl = money(
+        ((price - Decimal(position.avg_cost_basis)) * quantity) - fees
+    )
+    remaining = quantity_value(max(current_qty - quantity, Decimal("0")))
+    if remaining <= Decimal("0"):
         db.delete(position)
     else:
         position.quantity = remaining
         position.updated_at = datetime.utcnow()
     return realized_pnl
-
-
-def estimate_sell_quantity(
-    position: Position, amount_dollars: Decimal, price: Decimal
-) -> Decimal:
-    max_qty = Decimal(position.quantity)
-    if amount_dollars >= max_qty * price:
-        return shares(max_qty)
-    return shares(amount_dollars / price)
-
-
-def group_prices_by_symbol(
-    agents: list[Agent], positions: list[Position]
-) -> dict[str, list[str]]:
-    grouped = defaultdict(list)
-    for position in positions:
-        grouped[position.symbol].append(position.agent_id)
-    return grouped
