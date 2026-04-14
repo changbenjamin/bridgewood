@@ -63,35 +63,26 @@ export function PerformanceChart({ snapshots, agents, hiddenIds }: Props) {
   const [minReturn, maxReturn] = getReturnDomain(rows, visibleAgents);
 
   return (
-    <div className="rounded-2xl border border-stone-200 bg-white p-5 shadow-[0_16px_40px_rgba(15,23,42,0.06)] md:p-6">
-      <div className="mb-5">
-        <div className="space-y-1.5">
-          <h2 className="text-[2rem] font-semibold tracking-[-0.04em] text-stone-900">
-            Performance History
-          </h2>
-          <p className="max-w-3xl text-sm text-stone-500">
-            * Entries with asterisks are paper-trading accounts. Lines show
-            percent return from each portfolio&apos;s starting value, centered
-            on 0%. The S&amp;P 500 line uses SPY as the proxy benchmark.
-          </p>
-        </div>
-      </div>
-
-      <div className="h-[360px] min-w-0">
+    <div>
+      <div className="h-[420px] min-w-0 md:h-[500px]">
         <ResponsiveContainer width="100%" height="100%">
           <LineChart
             data={rows}
-            margin={{ top: 12, right: 24, bottom: 0, left: 0 }}
+            margin={{ top: 16, right: 20, bottom: 4, left: 0 }}
           >
-            <CartesianGrid stroke="#ede7dd" vertical={false} />
+            <CartesianGrid
+              stroke="#ded7cc"
+              strokeDasharray="2 6"
+              vertical={false}
+            />
             <ReferenceLine
               y={0}
-              stroke="#a8a29e"
-              strokeDasharray="6 6"
+              stroke="#5b6474"
+              strokeDasharray="4 6"
               label={{
                 value: "0% baseline",
-                position: "insideBottomRight",
-                fill: "#a8a29e",
+                position: "insideTopRight",
+                fill: "#78716c",
                 fontSize: 12,
               }}
             />
@@ -99,24 +90,26 @@ export function PerformanceChart({ snapshots, agents, hiddenIds }: Props) {
               dataKey="timestamp"
               axisLine={false}
               tickLine={false}
-              tick={{ fill: "#78716c", fontSize: 12 }}
+              tick={{ fill: "#8d8678", fontSize: 12 }}
               tickFormatter={(value) => formatDateTime(String(value))}
-              minTickGap={24}
+              minTickGap={26}
+              tickMargin={14}
             />
             <YAxis
               axisLine={false}
               tickLine={false}
-              tick={{ fill: "#78716c", fontSize: 12 }}
+              tick={{ fill: "#8d8678", fontSize: 12 }}
               tickFormatter={(value) => formatAxisPct(Number(value))}
               domain={[minReturn, maxReturn]}
-              width={84}
+              width={76}
+              tickMargin={14}
             />
             <Tooltip
               contentStyle={{
-                background: "#ffffff",
-                borderRadius: 16,
-                border: "1px solid #e7e5e4",
-                boxShadow: "0 16px 36px rgba(15, 23, 42, 0.1)",
+                background: "#fffdf9",
+                borderRadius: 6,
+                border: "1px solid #d8d0c2",
+                boxShadow: "0 10px 24px rgba(28, 25, 23, 0.08)",
               }}
               formatter={(value, name) => [
                 formatSignedPct(Number(value ?? 0)),
@@ -127,14 +120,15 @@ export function PerformanceChart({ snapshots, agents, hiddenIds }: Props) {
             {visibleAgents.map((agent) => (
               <Line
                 key={agent.id}
-                type="monotone"
+                type="stepAfter"
                 dataKey={agent.id}
                 name={agent.name}
                 stroke={colorForAgent(agent.id, agent.is_benchmark)}
-                strokeWidth={agent.is_benchmark ? 2.5 : 2.8}
+                strokeWidth={agent.is_benchmark ? 2.2 : 2.6}
                 dot={showSinglePoint ? { r: 4, strokeWidth: 0 } : false}
                 activeDot={{ r: 4, strokeWidth: 0 }}
                 connectNulls
+                strokeLinecap="round"
               />
             ))}
           </LineChart>
@@ -142,14 +136,14 @@ export function PerformanceChart({ snapshots, agents, hiddenIds }: Props) {
       </div>
 
       {showSinglePoint && (
-        <div className="mt-4 text-sm text-stone-500">
-          The chart will fill in as additional snapshots are captured throughout
-          the session.
+        <div className="mt-3 text-sm text-stone-500">
+          Additional marks will appear as new snapshots are recorded during the
+          session.
         </div>
       )}
 
       {!hasCompetitors && (
-        <div className="mt-4 rounded-xl border border-sky-100 bg-sky-50 px-4 py-3 text-sm text-sky-900">
+        <div className="mt-3 border border-sky-200/70 bg-sky-50/60 px-4 py-3 text-sm text-sky-900">
           No agents have been registered yet.
         </div>
       )}

@@ -3,7 +3,7 @@
 
 :root {
   color: #1c1917;
-  background: #f9f8f4;
+  background: #f6f2ea;
   font-family: "Instrument Sans", sans-serif;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
@@ -24,6 +24,8 @@ body,
 body {
   margin: 0;
   font-family: "Instrument Sans", sans-serif;
+  background: #f6f2ea;
+  color: #1c1917;
 }
 
 button,
@@ -41,4 +43,8 @@ pre,
 
 .recharts-tooltip-wrapper {
   outline: none;
+}
+
+::selection {
+  background: rgba(66, 95, 145, 0.18);
 }
