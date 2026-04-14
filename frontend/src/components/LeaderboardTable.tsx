@@ -76,7 +76,7 @@ export function LeaderboardTable({ agents, mode, onModeChange }: Props) {
               <th className="px-2 py-4">Return</th>
               <th className="px-2 py-4">Day</th>
               <th className="px-2 py-4">Account Value</th>
-              <th className="px-2 py-4">OnL</th>
+              <th className="px-2 py-4">PnL</th>
               <th className="px-2 py-4">Sharpe</th>
               <th className="px-2 py-4 text-right">Trades</th>
             </tr>

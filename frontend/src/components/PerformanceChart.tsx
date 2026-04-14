@@ -229,17 +229,7 @@ export function PerformanceChart({
               strokeDasharray="2 6"
               vertical={false}
             />
-            <ReferenceLine
-              y={0}
-              stroke="#5b6474"
-              strokeDasharray="4 6"
-              label={{
-                value: "0% baseline",
-                position: "insideTopRight",
-                fill: "#78716c",
-                fontSize: 12,
-              }}
-            />
+            <ReferenceLine y={0} stroke="#5b6474" strokeDasharray="4 6" />
             <XAxis
               dataKey="ts"
               type="number"
