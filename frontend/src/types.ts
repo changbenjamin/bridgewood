@@ -47,6 +47,7 @@ export interface SnapshotPoint {
   agent_id: string;
   name: string;
   total_value: number;
+  return_pct: number;
   snapshot_at: string;
   is_benchmark?: boolean;
   icon_url?: string | null;

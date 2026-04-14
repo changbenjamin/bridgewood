@@ -9,11 +9,7 @@ import {
   YAxis,
 } from "recharts";
 
-import {
-  formatAxisCurrency,
-  formatCurrency,
-  formatDateTime,
-} from "../lib/format";
+import { formatAxisPct, formatDateTime, formatSignedPct } from "../lib/format";
 import { colorForAgent } from "../lib/palette";
 import type { LeaderboardEntry, SnapshotPoint } from "../types";
 
@@ -33,11 +29,30 @@ function buildRows(points: SnapshotPoint[]) {
   )) {
     const key = point.snapshot_at;
     const row = grouped.get(key) ?? { timestamp: key };
-    row[point.agent_id] = point.total_value;
+    row[point.agent_id] = point.return_pct;
     grouped.set(key, row);
   }
 
   return Array.from(grouped.values());
+}
+
+function getReturnDomain(
+  rows: Record<string, number | string>[],
+  visibleAgents: LeaderboardEntry[],
+): [number, number] {
+  let maxAbsReturn = 0;
+
+  rows.forEach((row) => {
+    visibleAgents.forEach((agent) => {
+      const value = row[agent.id];
+      if (typeof value === "number") {
+        maxAbsReturn = Math.max(maxAbsReturn, Math.abs(value));
+      }
+    });
+  });
+
+  const padded = Math.max(1, maxAbsReturn * 1.15);
+  return [-padded, padded];
 }
 
 export function PerformanceChart({ snapshots, agents, hiddenIds }: Props) {
@@ -45,6 +60,7 @@ export function PerformanceChart({ snapshots, agents, hiddenIds }: Props) {
   const visibleAgents = agents.filter((agent) => !hiddenIds.includes(agent.id));
   const hasCompetitors = agents.some((agent) => !agent.is_benchmark);
   const showSinglePoint = rows.length < 2;
+  const [minReturn, maxReturn] = getReturnDomain(rows, visibleAgents);
 
   return (
     <div className="rounded-2xl border border-stone-200 bg-white p-5 shadow-[0_16px_40px_rgba(15,23,42,0.06)] md:p-6">
@@ -54,9 +70,9 @@ export function PerformanceChart({ snapshots, agents, hiddenIds }: Props) {
             Performance History
           </h2>
           <p className="max-w-3xl text-sm text-stone-500">
-            * Entries with asterisks are paper-trading accounts. The S&amp;P 500
-            line uses SPY as the proxy benchmark, and Bridgewood refreshes marks
-            from Alpaca market data.
+            * Entries with asterisks are paper-trading accounts. Lines show
+            percent return from each portfolio&apos;s starting value, centered
+            on 0%. The S&amp;P 500 line uses SPY as the proxy benchmark.
           </p>
         </div>
       </div>
@@ -69,11 +85,11 @@ export function PerformanceChart({ snapshots, agents, hiddenIds }: Props) {
           >
             <CartesianGrid stroke="#ede7dd" vertical={false} />
             <ReferenceLine
-              y={10000}
+              y={0}
               stroke="#a8a29e"
               strokeDasharray="6 6"
               label={{
-                value: "$10K starting cash",
+                value: "0% baseline",
                 position: "insideBottomRight",
                 fill: "#a8a29e",
                 fontSize: 12,
@@ -91,7 +107,8 @@ export function PerformanceChart({ snapshots, agents, hiddenIds }: Props) {
               axisLine={false}
               tickLine={false}
               tick={{ fill: "#78716c", fontSize: 12 }}
-              tickFormatter={(value) => formatAxisCurrency(Number(value))}
+              tickFormatter={(value) => formatAxisPct(Number(value))}
+              domain={[minReturn, maxReturn]}
               width={84}
             />
             <Tooltip
@@ -102,7 +119,7 @@ export function PerformanceChart({ snapshots, agents, hiddenIds }: Props) {
                 boxShadow: "0 16px 36px rgba(15, 23, 42, 0.1)",
               }}
               formatter={(value, name) => [
-                formatCurrency(Number(value ?? 0)),
+                formatSignedPct(Number(value ?? 0)),
                 String(name),
               ]}
               labelFormatter={(label) => formatDateTime(String(label))}

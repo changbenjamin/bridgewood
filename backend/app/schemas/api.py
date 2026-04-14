@@ -233,6 +233,7 @@ class SnapshotPoint(APIModel):
     agent_id: str
     name: str
     total_value: float
+    return_pct: float
     snapshot_at: datetime
     is_benchmark: bool = False
     icon_url: str | None = None

@@ -214,6 +214,7 @@ def build_snapshot_series(db: Session, range_key: str) -> list[SnapshotPoint]:
                 agent_id=agent.id,
                 name=_display_name(agent),
                 total_value=float(snapshot.total_value),
+                return_pct=float(snapshot.return_pct),
                 snapshot_at=snapshot.snapshot_at,
                 icon_url=agent.icon_url,
             )
@@ -227,6 +228,7 @@ def build_snapshot_series(db: Session, range_key: str) -> list[SnapshotPoint]:
                 agent_id=_benchmark_id(snapshot.symbol),
                 name=_benchmark_name(snapshot.symbol),
                 total_value=float(snapshot.total_value),
+                return_pct=float(snapshot.return_pct),
                 snapshot_at=snapshot.snapshot_at,
                 is_benchmark=True,
             )
