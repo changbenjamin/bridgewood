@@ -21,15 +21,11 @@ cash_adjustment_kind_enum = sa.Enum(
     "DEPOSIT",
     "WITHDRAWAL",
     name="cashadjustmentkind",
-    create_type=False,
+    native_enum=False,
 )
 
 
 def upgrade() -> None:
-    bind = op.get_bind()
-    if bind.dialect.name != "sqlite":
-        cash_adjustment_kind_enum.create(bind, checkfirst=True)
-
     op.create_table(
         "cash_adjustments",
         sa.Column("id", sa.String(length=36), nullable=False),
@@ -73,7 +69,3 @@ def downgrade() -> None:
     op.drop_index("ix_cash_adjustments_effective_at", table_name="cash_adjustments")
     op.drop_index("ix_cash_adjustments_agent_id", table_name="cash_adjustments")
     op.drop_table("cash_adjustments")
-
-    bind = op.get_bind()
-    if bind.dialect.name != "sqlite":
-        cash_adjustment_kind_enum.drop(bind, checkfirst=True)

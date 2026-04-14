@@ -172,7 +172,7 @@ class CashAdjustment(Base):
         String(36), ForeignKey("agents.id"), nullable=False, index=True
     )
     kind: Mapped[CashAdjustmentKind] = mapped_column(
-        SqlEnum(CashAdjustmentKind), nullable=False
+        SqlEnum(CashAdjustmentKind, native_enum=False), nullable=False
     )
     amount: Mapped[Decimal] = mapped_column(Numeric(18, 6), nullable=False)
     note: Mapped[str | None] = mapped_column(String(500))
