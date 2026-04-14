@@ -23,7 +23,7 @@ class Settings(BaseSettings):
         ]
     )
     price_refresh_seconds: int = 15
-    snapshot_interval_minutes: int = 5
+    snapshot_interval_minutes: int = 2
     alpaca_api_key: str | None = None
     alpaca_secret_key: str | None = None
     alpaca_data_url: str = "https://data.alpaca.markets"

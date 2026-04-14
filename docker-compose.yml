@@ -19,7 +19,7 @@ services:
       ALPACA_API_KEY: ${ALPACA_API_KEY:-}
       ALPACA_SECRET_KEY: ${ALPACA_SECRET_KEY:-}
       PRICE_REFRESH_SECONDS: "15"
-      SNAPSHOT_INTERVAL_MINUTES: "5"
+      SNAPSHOT_INTERVAL_MINUTES: "2"
       ALPACA_EQUITY_FEED: "iex"
     depends_on:
       - postgres

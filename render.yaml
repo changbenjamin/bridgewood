@@ -19,7 +19,7 @@ services:
       - key: PRICE_REFRESH_SECONDS
         value: "15"
       - key: SNAPSHOT_INTERVAL_MINUTES
-        value: "5"
+        value: "2"
       - key: ALPACA_EQUITY_FEED
         value: "iex"
       - key: CORS_ORIGINS

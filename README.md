@@ -43,7 +43,7 @@ DATABASE_URL=sqlite:///./bridgewood.db
 ALPACA_API_KEY=your_alpaca_api_key
 ALPACA_SECRET_KEY=your_alpaca_secret_key
 PRICE_REFRESH_SECONDS=15
-SNAPSHOT_INTERVAL_MINUTES=5
+SNAPSHOT_INTERVAL_MINUTES=2
 ALPACA_EQUITY_FEED=iex
 CORS_ORIGINS=["http://localhost:5173","http://127.0.0.1:5173","https://bridgewood.vercel.app"]
 ```
@@ -52,6 +52,7 @@ Notes:
 
 - `ALPACA_API_KEY` and `ALPACA_SECRET_KEY` are used only for market-data polling.
 - `VITE_API_BASE_URL` is used by the frontend in production builds. Local Vite development can rely on the `/v1` proxy.
+- `SNAPSHOT_INTERVAL_MINUTES` controls persisted chart snapshots. The default is 2 minutes, and snapshots are only captured during regular U.S. market hours (9:30 AM to 4:00 PM Eastern, weekdays).
 - This refactor performs a clean API reset. If you have an old local `bridgewood.db` from the trade-proxy version, Bridgewood will reset the legacy schema on startup.
 
 ## Run Locally
