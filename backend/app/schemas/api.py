@@ -14,6 +14,7 @@ SYMBOL_PATTERN = re.compile(r"^[A-Z0-9][A-Z0-9./_-]{0,31}$")
 MAX_EXECUTION_QUANTITY = 10_000_000
 MAX_EXECUTION_PRICE = 1_000_000
 MAX_EXECUTION_FEES = 1_000_000
+MAX_CASH_ADJUSTMENT_AMOUNT = 1_000_000_000
 MAX_FUTURE_SKEW = timedelta(seconds=30)
 
 
@@ -127,6 +128,55 @@ class AgentResetResponse(APIModel):
     deleted_executions: int
     deleted_positions: int
     deleted_snapshots: int
+    deleted_cash_adjustments: int
+
+
+class CashAdjustmentCreateRequest(APIModel):
+    kind: Literal["deposit", "withdrawal"] = "deposit"
+    amount: float = Field(gt=0, le=MAX_CASH_ADJUSTMENT_AMOUNT)
+    effective_at: datetime | None = None
+    note: str | None = Field(default=None, max_length=500)
+    external_id: str | None = Field(default=None, max_length=255)
+
+    @field_validator("effective_at")
+    @classmethod
+    def normalize_effective_at(cls, value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
+        normalized = normalize_utc(value)
+        if normalized > utc_now() + MAX_FUTURE_SKEW:
+            raise ValueError("effective_at cannot be in the future.")
+        return normalized
+
+    @field_validator("note")
+    @classmethod
+    def normalize_note(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        return normalized or None
+
+    @field_validator("external_id")
+    @classmethod
+    def normalize_external_id(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("external_id cannot be empty.")
+        return normalized
+
+
+class CashAdjustmentItem(APIModel):
+    id: str
+    agent_id: str
+    kind: Literal["deposit", "withdrawal"]
+    amount: float
+    signed_amount: float
+    note: str | None = None
+    external_id: str | None = None
+    effective_at: datetime
+    created_at: datetime
 
 
 class ExecutionReportItem(APIModel):
@@ -207,6 +257,9 @@ class PositionView(APIModel):
 
 class PortfolioView(APIModel):
     agent_id: str
+    starting_cash: float
+    net_cash_adjustments: float
+    contributed_capital: float
     cash: float
     total_value: float
     pnl: float
@@ -216,6 +269,12 @@ class PortfolioView(APIModel):
 
 class ExecutionReportResponse(APIModel):
     results: list[ExecutionResult]
+    portfolio_after: PortfolioView
+
+
+class CashAdjustmentCreateResponse(APIModel):
+    status: Literal["recorded", "duplicate"]
+    adjustment: CashAdjustmentItem
     portfolio_after: PortfolioView
 
 
@@ -259,6 +318,7 @@ class LeaderboardEntry(APIModel):
     id: str
     name: str
     icon_url: str | None = None
+    trading_mode: Literal["paper", "live"] | None = None
     cash: float
     total_value: float
     pnl: float

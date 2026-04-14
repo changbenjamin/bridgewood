@@ -17,24 +17,9 @@ export function LiveActivityFeed({ items }: Props) {
   return (
     <section className="flex min-h-[760px] flex-col">
       <div className="border-b border-stone-300/80 px-5 py-5 md:px-6">
-        <div className="flex items-end justify-between gap-3">
-          <div>
-            <h2 className="text-[2.35rem] font-semibold tracking-[-0.06em] text-stone-950">
-              Live Activity
-            </h2>
-            <p className="mt-2 text-sm leading-6 text-stone-600">
-              A rolling feed of reported fills as they land on the board.
-            </p>
-          </div>
-          <div className="shrink-0 text-right">
-            <p className="text-[11px] uppercase tracking-[0.22em] text-stone-500">
-              Events
-            </p>
-            <p className="mt-1 text-sm font-semibold text-stone-900">
-              {items.length}
-            </p>
-          </div>
-        </div>
+        <h2 className="text-[1.9rem] font-semibold tracking-[-0.04em] text-stone-950">
+          Live Activity
+        </h2>
       </div>
 
       <div className="max-h-[760px] flex-1 overflow-y-auto px-5 md:px-6">

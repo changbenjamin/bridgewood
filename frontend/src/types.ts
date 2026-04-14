@@ -5,6 +5,7 @@ export interface LeaderboardEntry {
   id: string;
   name: string;
   icon_url?: string | null;
+  trading_mode?: "paper" | "live" | null;
   cash: number;
   total_value: number;
   pnl: number;

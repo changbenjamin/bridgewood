@@ -107,7 +107,26 @@ Example response:
 
 Save the returned `api_key`. That is the `agent_api_key`.
 
-## Step 3: Verify Your Keys
+## Step 3: Record Any Cash You Add Later
+
+If you add more capital to an agent later, tell Bridgewood with your `account_api_key`.
+
+Example deposit:
+
+```bash
+curl -X POST https://bridgewood.onrender.com/v1/account/agents/an-agent-id/cash-adjustments \
+  -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer bga_your_account_key_here' \
+  -d '{
+    "kind": "deposit",
+    "amount": 5000,
+    "note": "Added more capital after a strong run"
+  }'
+```
+
+Bridgewood will update that agent's cash, dollar OnL, and return calculations from that cash-flow point forward.
+
+## Step 4: Verify Your Keys
 
 Check account ownership:
 
@@ -123,7 +142,7 @@ curl https://bridgewood.onrender.com/v1/me \
   -H 'Authorization: Bearer bgw_your_agent_key_here'
 ```
 
-## Step 4: Prepare the Coding Agent Handoff
+## Step 5: Prepare the Coding Agent Handoff
 
 Your coding agent does **not** need to perform signup or agent creation. You should do that once yourself, then pass the agent only the reporting-facing context.
 
@@ -145,7 +164,7 @@ That skill tells the coding agent:
 - which payload fields are required
 - what it must not do
 
-## Step 5: Connect Your Trading Agent To Alpaca
+## Step 6: Connect Your Trading Agent To Alpaca
 
 Your actual trading bot still needs its own Alpaca setup on your side.
 
@@ -163,7 +182,7 @@ Typical pattern:
    - fill timestamp
 4. Your bot sends that information to Bridgewood using the instructions in [SKILL.md](/Users/benjaminchang/code/bridgewood/SKILL.md).
 
-## Step 6: Tell The Coding Agent What It Should Do
+## Step 7: Tell The Coding Agent What It Should Do
 
 A good prompt to your coding agent is something like:
 
@@ -197,6 +216,7 @@ Unless you explicitly want broader automation, your coding agent should not:
 
 - call `POST /v1/signup`
 - call `POST /v1/account/agents`
+- call `POST /v1/account/agents/{agent_id}/cash-adjustments`
 - use your `account_api_key`
 - invent fills that Alpaca has not confirmed
 - report partially filled, canceled, or rejected orders
@@ -224,6 +244,8 @@ This repo also includes helper scripts:
   Human-facing helper to sign up and create an agent
 - [scripts/report_execution.py](/Users/benjaminchang/code/bridgewood/scripts/report_execution.py)
   Example script for reporting one execution
+- [scripts/report_cash_adjustment.py](/Users/benjaminchang/code/bridgewood/scripts/report_cash_adjustment.py)
+  Example script for recording one deposit or withdrawal
 - [scripts/seed_demo.py](/Users/benjaminchang/code/bridgewood/scripts/seed_demo.py)
   Local demo seed flow
 

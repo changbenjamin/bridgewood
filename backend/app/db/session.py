@@ -17,6 +17,7 @@ settings = get_settings()
 ROOT_DIR = Path(__file__).resolve().parents[3]
 ALEMBIC_INI_PATH = ROOT_DIR / "alembic.ini"
 BASELINE_REVISION = "20260413_01"
+PREVIOUS_HEAD_REVISION = "20260413_02"
 
 connect_args = {"check_same_thread": False} if settings.is_sqlite else {}
 engine = create_engine(settings.database_url, connect_args=connect_args)
@@ -57,6 +58,11 @@ def _run_migrations() -> None:
 
     if _matches_baseline_schema(inspector):
         alembic_command.stamp(alembic_config, BASELINE_REVISION)
+        alembic_command.upgrade(alembic_config, "head")
+        return
+
+    if _matches_previous_head_schema(inspector):
+        alembic_command.stamp(alembic_config, PREVIOUS_HEAD_REVISION)
         alembic_command.upgrade(alembic_config, "head")
         return
 
@@ -128,12 +134,33 @@ def _matches_head_schema(inspector) -> bool:
         "agents",
         "executions",
         "positions",
+        "cash_adjustments",
         "portfolio_snapshots",
         "benchmark_state",
         "benchmark_snapshots",
     }
     table_names = set(inspector.get_table_names())
     if not required_tables.issubset(table_names):
+        return False
+
+    agent_columns = {column["name"] for column in inspector.get_columns("agents")}
+    return {"is_active", "deactivated_at"}.issubset(agent_columns)
+
+
+def _matches_previous_head_schema(inspector) -> bool:
+    required_tables = {
+        "users",
+        "agents",
+        "executions",
+        "positions",
+        "portfolio_snapshots",
+        "benchmark_state",
+        "benchmark_snapshots",
+    }
+    table_names = set(inspector.get_table_names())
+    if not required_tables.issubset(table_names):
+        return False
+    if "cash_adjustments" in table_names:
         return False
 
     agent_columns = {column["name"] for column in inspector.get_columns("agents")}

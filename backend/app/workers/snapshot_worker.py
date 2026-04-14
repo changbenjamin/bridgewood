@@ -95,7 +95,7 @@ class SnapshotWorker:
                 .where(Agent.is_active.is_(True))
                 .order_by(Agent.created_at.asc())
             ).all():
-                portfolio = build_portfolio(db, agent, prices)
+                portfolio = build_portfolio(db, agent, prices, as_of=slot)
                 db.add(
                     PortfolioSnapshot(
                         agent_id=agent.id,

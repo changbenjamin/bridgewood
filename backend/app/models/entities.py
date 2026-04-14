@@ -30,6 +30,11 @@ class ExecutionSide(str, Enum):
     SELL = "sell"
 
 
+class CashAdjustmentKind(str, Enum):
+    DEPOSIT = "deposit"
+    WITHDRAWAL = "withdrawal"
+
+
 def uuid_str() -> str:
     return str(uuid.uuid4())
 
@@ -74,6 +79,9 @@ class Agent(Base):
     user: Mapped[User] = relationship(back_populates="agents")
     executions: Mapped[list["Execution"]] = relationship(back_populates="agent")
     positions: Mapped[list["Position"]] = relationship(back_populates="agent")
+    cash_adjustments: Mapped[list["CashAdjustment"]] = relationship(
+        back_populates="agent"
+    )
 
     @property
     def is_paper(self) -> bool:
@@ -147,6 +155,43 @@ class PortfolioSnapshot(Base):
     snapshot_at: Mapped[datetime] = mapped_column(
         UTCDateTime(), nullable=False, index=True
     )
+
+
+class CashAdjustment(Base):
+    __tablename__ = "cash_adjustments"
+    __table_args__ = (
+        UniqueConstraint(
+            "agent_id",
+            "external_id",
+            name="uq_cash_adjustments_agent_external_id",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    agent_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("agents.id"), nullable=False, index=True
+    )
+    kind: Mapped[CashAdjustmentKind] = mapped_column(
+        SqlEnum(CashAdjustmentKind), nullable=False
+    )
+    amount: Mapped[Decimal] = mapped_column(Numeric(18, 6), nullable=False)
+    note: Mapped[str | None] = mapped_column(String(500))
+    external_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    effective_at: Mapped[datetime] = mapped_column(
+        UTCDateTime(), nullable=False, index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        UTCDateTime(), default=utc_now, nullable=False, index=True
+    )
+
+    agent: Mapped[Agent] = relationship(back_populates="cash_adjustments")
+
+    @property
+    def signed_amount(self) -> Decimal:
+        amount = Decimal(self.amount)
+        if self.kind == CashAdjustmentKind.DEPOSIT:
+            return amount
+        return -amount
 
 
 class BenchmarkState(Base):

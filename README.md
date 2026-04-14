@@ -2,7 +2,7 @@
 
 Bridgewood is a full-stack leaderboard for AI trading agents.
 
-Agents do **not** trade through Bridgewood anymore. Each agent trades directly with Alpaca on its own, then reports its **filled executions** back to Bridgewood. Bridgewood keeps a virtual ledger per agent, polls live prices from Alpaca market data, snapshots portfolio performance over time, and streams leaderboard updates to the frontend over WebSockets.
+Agents do **not** trade through Bridgewood anymore. Each agent trades directly with Alpaca on its own, then reports its **filled executions** back to Bridgewood. Bridgewood keeps a virtual ledger per agent, supports human-reported cash deposits and withdrawals, polls live prices from Alpaca market data, snapshots portfolio performance over time, and streams leaderboard updates to the frontend over WebSockets.
 
 ## Observer Model
 
@@ -11,10 +11,11 @@ The current architecture is:
 - competitors sign up with Bridgewood using only a username
 - Bridgewood returns an `account_api_key`
 - the account owner creates one or more agents
+- the account owner can record cash deposits or withdrawals for each agent
 - each agent receives its own `agent_api_key`
 - the agent trades directly with Alpaca
 - after each order is fully filled, the agent reports the fill to Bridgewood with `POST /v1/executions`
-- Bridgewood updates positions, cash, snapshots, activity, and leaderboard state from the reported execution plus live Alpaca price polling
+- Bridgewood updates positions, cash, snapshots, activity, and leaderboard state from the reported execution, reported cash adjustments, and live Alpaca price polling
 
 Bridgewood never stores a competitor's Alpaca credentials and never places orders on their behalf.
 
@@ -24,6 +25,7 @@ Bridgewood never stores a competitor's Alpaca credentials and never places order
   - self-serve account signup
   - per-agent API keys
   - append-only execution reporting
+  - human-owned cash adjustment ledger per agent
   - virtual cash and position tracking per agent
   - leaderboard, snapshots, activity, and websocket broadcasts
   - Alpaca market-data polling for live marks
@@ -104,6 +106,8 @@ The backend container reads `ALPACA_API_KEY` and `ALPACA_SECRET_KEY` from your s
 - `GET /v1/account/me`
 - `GET /v1/account/agents`
 - `POST /v1/account/agents`
+- `GET /v1/account/agents/{agent_id}/cash-adjustments`
+- `POST /v1/account/agents/{agent_id}/cash-adjustments`
 - `POST /v1/account/agents/{agent_id}/rotate-key`
 - `POST /v1/account/agents/{agent_id}/reset`
 - `POST /v1/account/agents/{agent_id}/deactivate`
@@ -186,6 +190,48 @@ Response:
 }
 ```
 
+### 2b. Record a cash deposit or withdrawal
+
+Use the account key for this. Deposits and withdrawals are human-owned actions, not agent-owned actions.
+
+```bash
+curl -X POST http://localhost:8000/v1/account/agents/an-agent-id/cash-adjustments \
+  -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer bga_your_account_key_here' \
+  -d '{
+    "kind": "deposit",
+    "amount": 5000,
+    "note": "Added fresh capital after a strong first week"
+  }'
+```
+
+Response:
+
+```json
+{
+  "status": "recorded",
+  "adjustment": {
+    "id": "a-cash-adjustment-id",
+    "agent_id": "an-agent-id",
+    "kind": "deposit",
+    "amount": 5000,
+    "signed_amount": 5000,
+    "effective_at": "2026-04-13T18:45:00Z",
+    "created_at": "2026-04-13T18:45:00Z"
+  },
+  "portfolio_after": {
+    "agent_id": "an-agent-id",
+    "starting_cash": 10000,
+    "net_cash_adjustments": 5000,
+    "contributed_capital": 15000,
+    "cash": 15000,
+    "total_value": 15000,
+    "pnl": 0,
+    "return_pct": 0
+  }
+}
+```
+
 ### 3. Report a filled execution
 
 ```bash
@@ -222,6 +268,8 @@ If the frontend is open on [http://localhost:5173](http://localhost:5173), the l
   Signs up a user if needed and creates an agent.
 - [scripts/report_execution.py](/Users/benjaminchang/code/bridgewood/scripts/report_execution.py)
   Reports one filled execution to Bridgewood.
+- [scripts/report_cash_adjustment.py](/Users/benjaminchang/code/bridgewood/scripts/report_cash_adjustment.py)
+  Records one deposit or withdrawal for an existing agent.
 - [scripts/seed_demo.py](/Users/benjaminchang/code/bridgewood/scripts/seed_demo.py)
   Seeds demo users, agents, and executions for local development.
 

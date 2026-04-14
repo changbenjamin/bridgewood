@@ -14,12 +14,18 @@ from app.models.entities import (
     Agent,
     BenchmarkSnapshot,
     BenchmarkState,
+    CashAdjustment,
     Execution,
     ExecutionSide,
     PortfolioSnapshot,
 )
 from app.schemas.api import LeaderboardEntry, LeaderboardPayload, SnapshotPoint
-from app.services.portfolio_engine import build_portfolio
+from app.services.portfolio_engine import (
+    build_portfolio,
+    cash_adjustment_total,
+    money,
+    time_weighted_return_series,
+)
 
 
 settings = get_settings()
@@ -53,7 +59,7 @@ def get_snapshot_lookback(range_key: str) -> datetime | None:
 
 
 def get_daily_change_pct(db: Session, agent: Agent) -> float:
-    cutoff = utc_now() - timedelta(days=2)
+    cutoff = utc_now() - timedelta(days=7)
     snapshots = list(
         db.scalars(
             select(PortfolioSnapshot)
@@ -61,18 +67,32 @@ def get_daily_change_pct(db: Session, agent: Agent) -> float:
                 PortfolioSnapshot.agent_id == agent.id,
                 PortfolioSnapshot.snapshot_at >= cutoff,
             )
-            .order_by(PortfolioSnapshot.snapshot_at.asc())
+            .order_by(PortfolioSnapshot.snapshot_at.asc(), PortfolioSnapshot.id.asc())
         )
     )
     if len(snapshots) < 2:
         return 0.0
-    grouped: dict[date, Decimal] = {}
+    grouped: dict[date, PortfolioSnapshot] = {}
     for snapshot in snapshots:
-        grouped[snapshot.snapshot_at.date()] = Decimal(snapshot.total_value)
-    values = list(grouped.values())
-    if len(values) < 2 or values[-2] == 0:
+        grouped[snapshot.snapshot_at.date()] = snapshot
+    closing_snapshots = list(grouped.values())
+    if len(closing_snapshots) < 2:
         return 0.0
-    return float(((values[-1] - values[-2]) / values[-2]) * Decimal("100"))
+    previous = closing_snapshots[-2]
+    current = closing_snapshots[-1]
+    previous_value = Decimal(previous.total_value)
+    if previous_value <= 0:
+        return 0.0
+    net_flow = cash_adjustment_total(
+        db,
+        agent.id,
+        start_after=previous.snapshot_at,
+        end_at=current.snapshot_at,
+    )
+    return float(
+        ((Decimal(current.total_value) - previous_value - net_flow) / previous_value)
+        * Decimal("100")
+    )
 
 
 def compute_sharpe(db: Session, agent_id: str) -> float:
@@ -80,17 +100,17 @@ def compute_sharpe(db: Session, agent_id: str) -> float:
         db.scalars(
             select(PortfolioSnapshot)
             .where(PortfolioSnapshot.agent_id == agent_id)
-            .order_by(PortfolioSnapshot.snapshot_at.asc())
+            .order_by(PortfolioSnapshot.snapshot_at.asc(), PortfolioSnapshot.id.asc())
         )
     )
     if len(snapshots) < 2:
         return 0.0
 
-    closing_values: dict[date, Decimal] = {}
+    closing_snapshots: dict[date, PortfolioSnapshot] = {}
     for snapshot in snapshots:
-        closing_values[snapshot.snapshot_at.date()] = Decimal(snapshot.total_value)
+        closing_snapshots[snapshot.snapshot_at.date()] = snapshot
 
-    values = list(closing_values.values())
+    values = list(closing_snapshots.values())
     if len(values) < 2:
         return 0.0
 
@@ -98,9 +118,21 @@ def compute_sharpe(db: Session, agent_id: str) -> float:
     for index in range(1, len(values)):
         previous = values[index - 1]
         current = values[index]
-        if previous == 0:
+        previous_value = Decimal(previous.total_value)
+        if previous_value <= 0:
             continue
-        daily_returns.append(float((current - previous) / previous))
+        net_flow = cash_adjustment_total(
+            db,
+            agent_id,
+            start_after=previous.snapshot_at,
+            end_at=current.snapshot_at,
+        )
+        daily_returns.append(
+            float(
+                (Decimal(current.total_value) - previous_value - net_flow)
+                / previous_value
+            )
+        )
 
     if len(daily_returns) < 2:
         return 0.0
@@ -124,7 +156,7 @@ def build_leaderboard_payload(
     entries: list[LeaderboardEntry] = []
 
     for agent in agents:
-        portfolio = build_portfolio(db, agent, prices)
+        portfolio = build_portfolio(db, agent, prices, as_of=timestamp)
         max_win = db.scalar(
             select(func.max(Execution.realized_pnl)).where(
                 Execution.agent_id == agent.id,
@@ -150,6 +182,7 @@ def build_leaderboard_payload(
                 id=agent.id,
                 name=_display_name(agent),
                 icon_url=agent.icon_url,
+                trading_mode=agent.trading_mode.value,
                 cash=portfolio.cash,
                 total_value=portfolio.total_value,
                 pnl=portfolio.pnl,
@@ -176,6 +209,7 @@ def build_leaderboard_payload(
                     id=_benchmark_id(benchmark_state.symbol),
                     name=_benchmark_name(benchmark_state.symbol),
                     cash=0.0,
+                    trading_mode=None,
                     total_value=float(total_value),
                     pnl=float(pnl),
                     return_pct=float(return_pct),
@@ -188,8 +222,54 @@ def build_leaderboard_payload(
                 )
             )
 
-    entries.sort(key=lambda entry: entry.total_value, reverse=True)
+    entries.sort(key=lambda entry: (entry.return_pct, entry.total_value), reverse=True)
     return LeaderboardPayload(agents=entries, timestamp=timestamp)
+
+
+def _build_agent_snapshot_points(
+    db: Session, agent: Agent, snapshots: list[PortfolioSnapshot]
+) -> list[SnapshotPoint]:
+    if not snapshots:
+        return []
+
+    adjustments = list(
+        db.scalars(
+            select(CashAdjustment)
+            .where(
+                CashAdjustment.agent_id == agent.id,
+                CashAdjustment.effective_at <= snapshots[-1].snapshot_at,
+            )
+            .order_by(
+                CashAdjustment.effective_at.asc(),
+                CashAdjustment.created_at.asc(),
+                CashAdjustment.id.asc(),
+            )
+        ).all()
+    )
+    valuations = [
+        (snapshot.snapshot_at, money(Decimal(snapshot.total_value)))
+        for snapshot in snapshots
+    ]
+    return_by_timestamp = {
+        snapshot_at: return_pct
+        for snapshot_at, return_pct in time_weighted_return_series(
+            agent, valuations, adjustments
+        )
+    }
+
+    return [
+        SnapshotPoint(
+            agent_id=agent.id,
+            name=_display_name(agent),
+            total_value=float(snapshot.total_value),
+            return_pct=float(
+                return_by_timestamp.get(snapshot.snapshot_at, Decimal("0"))
+            ),
+            snapshot_at=snapshot.snapshot_at,
+            icon_url=agent.icon_url,
+        )
+        for snapshot in snapshots
+    ]
 
 
 def build_snapshot_series(db: Session, range_key: str) -> list[SnapshotPoint]:
@@ -202,27 +282,26 @@ def build_snapshot_series(db: Session, range_key: str) -> list[SnapshotPoint]:
     )
     benchmark_query = select(BenchmarkSnapshot)
     if lookback is not None:
-        snapshots_query = snapshots_query.where(
-            PortfolioSnapshot.snapshot_at >= lookback
-        )
         benchmark_query = benchmark_query.where(
             BenchmarkSnapshot.snapshot_at >= lookback
         )
 
     points: list[SnapshotPoint] = []
+    snapshots_by_agent: dict[str, list[PortfolioSnapshot]] = {}
+    agents_by_id: dict[str, Agent] = {}
     for snapshot, agent in db.execute(
         snapshots_query.order_by(PortfolioSnapshot.snapshot_at.asc())
     ).all():
-        points.append(
-            SnapshotPoint(
-                agent_id=agent.id,
-                name=_display_name(agent),
-                total_value=float(snapshot.total_value),
-                return_pct=float(snapshot.return_pct),
-                snapshot_at=snapshot.snapshot_at,
-                icon_url=agent.icon_url,
-            )
+        snapshots_by_agent.setdefault(agent.id, []).append(snapshot)
+        agents_by_id[agent.id] = agent
+
+    for agent_id, snapshots in snapshots_by_agent.items():
+        points.extend(
+            _build_agent_snapshot_points(db, agents_by_id[agent_id], snapshots)
         )
+
+    if lookback is not None:
+        points = [point for point in points if point.snapshot_at >= lookback]
 
     for snapshot in db.scalars(
         benchmark_query.order_by(BenchmarkSnapshot.snapshot_at.asc())
@@ -238,4 +317,5 @@ def build_snapshot_series(db: Session, range_key: str) -> list[SnapshotPoint]:
             )
         )
 
+    points.sort(key=lambda point: point.snapshot_at)
     return points

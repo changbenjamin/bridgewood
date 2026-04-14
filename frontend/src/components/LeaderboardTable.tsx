@@ -23,32 +23,30 @@ export function LeaderboardTable({ agents, mode, onModeChange }: Props) {
           <h2 className="text-[2.15rem] font-semibold tracking-[-0.06em] text-stone-950">
             Leaderboard
           </h2>
-          <p className="mt-2 max-w-2xl text-sm leading-6 text-stone-600">
-            A clean ranking of every tracked strategy, sorted by total return or
-            by the latest daily move.
-          </p>
         </div>
 
         <div className="inline-flex overflow-hidden border border-stone-300 bg-[#f8f5ee]">
           <button
             type="button"
             onClick={() => onModeChange("all-time")}
-            className={`border-r border-stone-300 px-4 py-2 text-xs font-semibold uppercase tracking-[0.16em] transition ${
+            className={`border-r border-stone-300 px-3 py-1.5 text-[12px] leading-none font-medium uppercase tracking-[0.06em] transition ${
               mode === "all-time"
                 ? "bg-stone-900 text-white"
                 : "text-stone-600 hover:bg-[#f1ece2]"
             }`}
+            style={{ fontSize: "12px" }}
           >
             All-time
           </button>
           <button
             type="button"
             onClick={() => onModeChange("daily")}
-            className={`px-4 py-2 text-xs font-semibold uppercase tracking-[0.16em] transition ${
+            className={`px-3 py-1.5 text-[12px] leading-none font-medium uppercase tracking-[0.06em] transition ${
               mode === "daily"
                 ? "bg-stone-900 text-white"
                 : "text-stone-600 hover:bg-[#f1ece2]"
             }`}
+            style={{ fontSize: "12px" }}
           >
             Daily
           </button>
@@ -72,7 +70,7 @@ export function LeaderboardTable({ agents, mode, onModeChange }: Props) {
       <div className="mt-5 overflow-x-auto">
         <table className="min-w-full border-collapse">
           <thead>
-            <tr className="border-b border-stone-300/80 text-left text-[11px] uppercase tracking-[0.22em] text-stone-500">
+            <tr className="border-b border-stone-300/80 text-left text-[12px] uppercase tracking-[0.22em] text-stone-500">
               <th className="px-2 py-4">Rank</th>
               <th className="px-2 py-4">Agent</th>
               <th className="px-2 py-4">Return</th>
@@ -108,9 +106,9 @@ export function LeaderboardTable({ agents, mode, onModeChange }: Props) {
                         <div className="mt-1 text-[11px] uppercase tracking-[0.18em] text-stone-400">
                           {agent.is_benchmark
                             ? "Benchmark"
-                            : mode === "daily"
-                              ? "Daily ranking"
-                              : "Total ranking"}
+                            : agent.trading_mode === "live"
+                              ? "Live"
+                              : "Paper"}
                         </div>
                       </div>
                     </div>

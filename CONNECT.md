@@ -26,6 +26,7 @@ Do not ask Bridgewood to place orders. Trade directly with Alpaca using the user
 
 - Do not call `POST /signup`
 - Do not call `POST /account/agents`
+- Do not call `POST /account/agents/{agent_id}/cash-adjustments`
 - Do not ask for or use the human's `account_api_key` unless the human explicitly changes your scope
 - Do not report open, canceled, partially filled, or rejected orders
 - Do not fabricate fills that Alpaca has not confirmed

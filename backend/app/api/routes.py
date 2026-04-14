@@ -25,6 +25,8 @@ from app.db.session import get_db
 from app.models.entities import (
     Agent,
     BenchmarkState,
+    CashAdjustment,
+    CashAdjustmentKind,
     Execution,
     ExecutionSide,
     PortfolioSnapshot,
@@ -40,6 +42,9 @@ from app.schemas.api import (
     ActivityItem,
     ActivityPage,
     ActivityPayload,
+    CashAdjustmentCreateRequest,
+    CashAdjustmentCreateResponse,
+    CashAdjustmentItem,
     AgentCreateResponse,
     AgentDeactivationResponse,
     AgentIdentity,
@@ -68,10 +73,13 @@ from app.services.market_data import MarketDataError
 from app.services.portfolio_engine import (
     apply_execution_to_position,
     build_portfolio,
+    cash_adjustment_total,
     gross_notional,
+    money,
     notional,
     price_value,
     quantity_value,
+    signed_cash_adjustment_amount,
 )
 from app.services.security import (
     generate_account_api_key,
@@ -168,6 +176,20 @@ def _build_agent_identity(agent: Agent) -> AgentIdentity:
         trading_mode=agent.trading_mode.value,
         is_active=agent.is_active,
         deactivated_at=agent.deactivated_at,
+    )
+
+
+def _build_cash_adjustment_item(adjustment: CashAdjustment) -> CashAdjustmentItem:
+    return CashAdjustmentItem(
+        id=adjustment.id,
+        agent_id=adjustment.agent_id,
+        kind=adjustment.kind.value,
+        amount=float(adjustment.amount),
+        signed_amount=float(adjustment.signed_amount),
+        note=adjustment.note,
+        external_id=adjustment.external_id,
+        effective_at=adjustment.effective_at,
+        created_at=adjustment.created_at,
     )
 
 
@@ -276,6 +298,21 @@ def _agent_for_account(db: Session, *, account: User, agent_id: str) -> Agent:
             code="AGENT_NOT_FOUND",
         )
     return agent
+
+
+async def _build_live_portfolio(
+    request: Request, db: Session, *, agent: Agent
+) -> PortfolioView:
+    prices = request.app.state.price_feed_service.snapshot()
+    if not prices:
+        await request.app.state.price_feed_service.refresh_once()
+        prices = request.app.state.price_feed_service.snapshot()
+    return build_portfolio(
+        db,
+        agent,
+        prices,
+        as_of=request.app.state.price_feed_service.last_updated_at,
+    )
 
 
 def _execution_cursor_filter(cursor: PageCursor):
@@ -498,7 +535,10 @@ async def _ensure_benchmark_initialized(request: Request, db: Session) -> None:
 
 async def _broadcast_cached_leaderboard(request: Request, db: Session) -> None:
     prices = request.app.state.price_feed_service.snapshot()
-    payload = build_leaderboard_payload(db, prices, timestamp=utc_now())
+    timestamp = (
+        request.app.state.price_feed_service.last_updated_at if prices else utc_now()
+    )
+    payload = build_leaderboard_payload(db, prices, timestamp=timestamp)
     await request.app.state.connection_manager.broadcast_json(
         payload.model_dump(mode="json")
     )
@@ -628,6 +668,103 @@ async def create_account_agent(
     )
 
 
+@router.get(
+    "/account/agents/{agent_id}/cash-adjustments",
+    response_model=list[CashAdjustmentItem],
+)
+async def get_agent_cash_adjustments(
+    agent_id: str,
+    account: User = Depends(get_current_account_user),
+    db: Session = Depends(get_db),
+) -> list[CashAdjustmentItem]:
+    agent = _agent_for_account(db, account=account, agent_id=agent_id)
+    adjustments = list(
+        db.scalars(
+            select(CashAdjustment)
+            .where(CashAdjustment.agent_id == agent.id)
+            .order_by(
+                CashAdjustment.effective_at.desc(),
+                CashAdjustment.created_at.desc(),
+                CashAdjustment.id.desc(),
+            )
+        ).all()
+    )
+    return [_build_cash_adjustment_item(adjustment) for adjustment in adjustments]
+
+
+@router.post(
+    "/account/agents/{agent_id}/cash-adjustments",
+    response_model=CashAdjustmentCreateResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_agent_cash_adjustment(
+    agent_id: str,
+    payload: CashAdjustmentCreateRequest,
+    request: Request,
+    account: User = Depends(get_current_account_user),
+    db: Session = Depends(get_db),
+) -> CashAdjustmentCreateResponse:
+    agent = _agent_for_account(db, account=account, agent_id=agent_id)
+
+    if payload.external_id:
+        existing = db.scalar(
+            select(CashAdjustment).where(
+                CashAdjustment.agent_id == agent.id,
+                CashAdjustment.external_id == payload.external_id,
+            )
+        )
+        if existing is not None:
+            portfolio = await _build_live_portfolio(request, db, agent=agent)
+            return CashAdjustmentCreateResponse(
+                status="duplicate",
+                adjustment=_build_cash_adjustment_item(existing),
+                portfolio_after=portfolio,
+            )
+
+    effective_at = payload.effective_at or utc_now()
+    if effective_at < agent.created_at:
+        raise BridgewoodError(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="effective_at cannot be earlier than the agent creation time.",
+            code="INVALID_EFFECTIVE_AT",
+        )
+
+    kind = CashAdjustmentKind(payload.kind)
+    amount = money(Decimal(str(payload.amount)))
+    signed_amount = signed_cash_adjustment_amount(kind, amount)
+    capital_after_adjustment = (
+        Decimal(agent.starting_cash)
+        + cash_adjustment_total(db, agent.id, end_at=effective_at)
+        + signed_amount
+    )
+    if capital_after_adjustment <= 0:
+        raise BridgewoodError(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cash adjustment would reduce contributed capital to zero or below.",
+            code="INVALID_CASH_ADJUSTMENT",
+        )
+
+    adjustment = CashAdjustment(
+        agent_id=agent.id,
+        kind=kind,
+        amount=amount,
+        note=payload.note,
+        external_id=payload.external_id,
+        effective_at=effective_at,
+    )
+    db.add(adjustment)
+    db.commit()
+    db.refresh(adjustment)
+
+    portfolio = await _build_live_portfolio(request, db, agent=agent)
+    await _broadcast_cached_leaderboard(request, db)
+    return CashAdjustmentCreateResponse(
+        status="recorded",
+        adjustment=_build_cash_adjustment_item(adjustment),
+        portfolio_after=portfolio,
+    )
+
+
 @router.post(
     "/account/agents/{agent_id}/rotate-key",
     response_model=AgentKeyRotationResponse,
@@ -666,6 +803,12 @@ async def reset_agent(
     db: Session = Depends(get_db),
 ) -> AgentResetResponse:
     agent = _agent_for_account(db, account=account, agent_id=agent_id)
+    deleted_cash_adjustments = (
+        db.execute(
+            delete(CashAdjustment).where(CashAdjustment.agent_id == agent.id)
+        ).rowcount
+        or 0
+    )
     deleted_executions = (
         db.execute(delete(Execution).where(Execution.agent_id == agent.id)).rowcount
         or 0
@@ -688,6 +831,7 @@ async def reset_agent(
         deleted_executions=deleted_executions,
         deleted_positions=deleted_positions,
         deleted_snapshots=deleted_snapshots,
+        deleted_cash_adjustments=deleted_cash_adjustments,
     )
 
 
@@ -727,11 +871,7 @@ async def get_portfolio(
     agent: Agent = Depends(get_current_agent),
     db: Session = Depends(get_db),
 ) -> PortfolioView:
-    prices = request.app.state.price_feed_service.snapshot()
-    if not prices:
-        await request.app.state.price_feed_service.refresh_once()
-        prices = request.app.state.price_feed_service.snapshot()
-    return build_portfolio(db, agent, prices)
+    return await _build_live_portfolio(request, db, agent=agent)
 
 
 @router.get("/executions", response_model=ExecutionPage)
@@ -866,7 +1006,12 @@ async def report_executions(
         raise
 
     prices = request.app.state.price_feed_service.snapshot()
-    portfolio = build_portfolio(db, agent, prices)
+    portfolio = build_portfolio(
+        db,
+        agent,
+        prices,
+        as_of=request.app.state.price_feed_service.last_updated_at,
+    )
 
     for execution in recorded_models:
         activity_payload = _build_activity_payload(execution, agent)
