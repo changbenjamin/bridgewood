@@ -10,6 +10,18 @@ class APIModel(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+def _strip_string(value: object) -> object:
+    if isinstance(value, str):
+        return value.strip()
+    return value
+
+
+def _validate_required_name(value: str) -> str:
+    if not value:
+        raise ValueError("name is required.")
+    return value
+
+
 class TradeIntent(APIModel):
     symbol: str
     side: Literal["buy", "sell"]
@@ -138,13 +150,15 @@ class AgentCreateRequest(APIModel):
     real_money: bool = False
     icon_url: str | None = None
 
+    @field_validator("name", mode="before")
+    @classmethod
+    def strip_agent_name(cls, value: object) -> object:
+        return _strip_string(value)
+
     @field_validator("name")
     @classmethod
-    def normalize_agent_name(cls, value: str) -> str:
-        normalized = value.strip()
-        if not normalized:
-            raise ValueError("name is required.")
-        return normalized
+    def validate_agent_name(cls, value: str) -> str:
+        return _validate_required_name(value)
 
 
 class AgentCreateResponse(APIModel):
@@ -174,13 +188,15 @@ class MockAgentCreateRequest(APIModel):
     starting_cash: float = Field(default=10000.0, gt=0)
     icon_url: str | None = None
 
+    @field_validator("name", mode="before")
+    @classmethod
+    def strip_mock_agent_name(cls, value: object) -> object:
+        return _strip_string(value)
+
     @field_validator("name")
     @classmethod
-    def normalize_mock_agent_name(cls, value: str) -> str:
-        normalized = value.strip()
-        if not normalized:
-            raise ValueError("name is required.")
-        return normalized
+    def validate_mock_agent_name(cls, value: str) -> str:
+        return _validate_required_name(value)
 
 
 class MockAgentCreateResponse(APIModel):
@@ -248,13 +264,29 @@ class AccountAgentCreateRequest(APIModel):
     real_money: bool = False
     icon_url: str | None = None
 
+    @field_validator("name", mode="before")
+    @classmethod
+    def strip_name(cls, value: object) -> object:
+        return _strip_string(value)
+
     @field_validator("name")
     @classmethod
-    def normalize_name(cls, value: str) -> str:
-        normalized = value.strip()
-        if not normalized:
-            raise ValueError("name is required.")
-        return normalized
+    def validate_name(cls, value: str) -> str:
+        return _validate_required_name(value)
+
+
+class AccountAgentRenameRequest(APIModel):
+    name: str = Field(min_length=1, max_length=255)
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def strip_name(cls, value: object) -> object:
+        return _strip_string(value)
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value: str) -> str:
+        return _validate_required_name(value)
 
 
 class AccountAgentSummary(APIModel):

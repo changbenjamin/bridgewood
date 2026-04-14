@@ -37,6 +37,7 @@ from app.schemas.api import (
     ActivityItem,
     ActivityPayload,
     AccountAgentCreateRequest,
+    AccountAgentRenameRequest,
     AccountAgentSummary,
     AccountIdentity,
     AccountOverview,
@@ -237,6 +238,20 @@ def _create_agent_record(
     return agent, api_key
 
 
+def _agent_for_account(*, db: Session, account: User, agent_id: str) -> Agent:
+    agent = db.get(Agent, agent_id)
+    if agent is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found."
+        )
+    if agent.user_id != account.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You do not have access to this agent.",
+        )
+    return agent
+
+
 def _create_user_record(
     *,
     db: Session,
@@ -416,6 +431,17 @@ async def _ensure_benchmark_initialized(request: Request, db: Session) -> None:
         )
     )
     db.commit()
+
+
+async def _broadcast_cached_leaderboard(request: Request, db: Session) -> None:
+    payload = build_leaderboard_payload(
+        db,
+        request.app.state.price_feed_service.snapshot(),
+        timestamp=datetime.utcnow(),
+    )
+    await request.app.state.connection_manager.broadcast_json(
+        payload.model_dump(mode="json")
+    )
 
 
 async def _process_trade_submission(
@@ -909,6 +935,22 @@ async def create_account_agent(
         icon_url=agent.icon_url,
         is_paper=agent.is_paper,
     )
+
+
+@router.patch("/account/agents/{agent_id}", response_model=AccountAgentSummary)
+async def rename_account_agent(
+    agent_id: str,
+    payload: AccountAgentRenameRequest,
+    request: Request,
+    account: User = Depends(get_current_account_user),
+    db: Session = Depends(get_db),
+) -> AccountAgentSummary:
+    agent = _agent_for_account(db=db, account=account, agent_id=agent_id)
+    agent.name = payload.name
+    db.commit()
+    db.refresh(agent)
+    await _broadcast_cached_leaderboard(request, db)
+    return _build_account_agent_summary(agent)
 
 
 @router.get("/me", response_model=AgentIdentity)
