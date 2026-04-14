@@ -75,3 +75,7 @@ export function formatDateTime(value: string) {
   }
   return dateTimeFormatter.format(parsed);
 }
+
+export function stripPaperMarker(value: string) {
+  return value.replace(/\s\*$/, "");
+}

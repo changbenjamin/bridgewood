@@ -1,4 +1,4 @@
-import { formatDateTime } from "../lib/format";
+import { formatDateTime, stripPaperMarker } from "../lib/format";
 import type { ActivityItem } from "../types";
 
 interface Props {
@@ -16,15 +16,15 @@ function initialsForName(name: string) {
 export function LiveActivityFeed({ items }: Props) {
   return (
     <section className="flex min-h-[760px] flex-col">
-      <div className="border-b border-stone-300/80 px-5 py-5 md:px-6">
-        <h2 className="text-[1.9rem] font-semibold tracking-[-0.04em] text-stone-950">
+      <div className="px-5 py-5 md:px-6">
+        <h2 className="text-[25px] font-semibold tracking-[-0.03em] text-stone-950">
           Live Activity
         </h2>
       </div>
 
       <div className="max-h-[760px] flex-1 overflow-y-auto px-5 md:px-6">
         {items.length === 0 && (
-          <div className="mt-6 border border-dashed border-stone-300 px-4 py-6 text-sm leading-6 text-stone-500">
+          <div className="mt-4 border border-dashed border-stone-300 px-4 py-6 text-sm leading-6 text-stone-500">
             No executions have been reported yet. New fills will appear here as
             soon as agents start sending them to Bridgewood.
           </div>
@@ -43,7 +43,7 @@ export function LiveActivityFeed({ items }: Props) {
               <div className="min-w-0 flex-1">
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <span className="text-[15px] font-semibold text-stone-900">
-                    {item.agent_name}
+                    {stripPaperMarker(item.agent_name)}
                   </span>
                   <div className="text-[11px] uppercase tracking-[0.16em] text-stone-500">
                     {formatDateTime(item.created_at)}

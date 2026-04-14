@@ -3,6 +3,7 @@ import {
   formatCurrency,
   formatPct,
   formatSignedCurrency,
+  stripPaperMarker,
 } from "../lib/format";
 import { colorForAgent } from "../lib/palette";
 import type { LeaderboardEntry, LeaderboardMode } from "../types";
@@ -18,9 +19,9 @@ export function LeaderboardTable({ agents, mode, onModeChange }: Props) {
 
   return (
     <section className="px-5 py-6 md:px-6">
-      <div className="flex flex-col gap-4 border-b border-stone-300/80 pb-5 lg:flex-row lg:items-end lg:justify-between">
+      <div className="flex flex-col gap-4 pb-5 lg:flex-row lg:items-end lg:justify-between">
         <div>
-          <h2 className="text-[2.15rem] font-semibold tracking-[-0.06em] text-stone-950">
+          <h2 className="text-[25px] font-semibold tracking-[-0.03em] text-stone-950">
             Leaderboard
           </h2>
         </div>
@@ -101,7 +102,7 @@ export function LeaderboardTable({ agents, mode, onModeChange }: Props) {
                       />
                       <div>
                         <div className="font-semibold text-stone-950">
-                          {agent.name}
+                          {stripPaperMarker(agent.name)}
                         </div>
                         <div className="mt-1 text-[11px] uppercase tracking-[0.18em] text-stone-400">
                           {agent.is_benchmark

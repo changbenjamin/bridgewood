@@ -3,7 +3,7 @@
 
 :root {
   color: #1c1917;
-  background: #f6f2ea;
+  background: #fbf9f3;
   font-family: "Instrument Sans", sans-serif;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
@@ -24,7 +24,7 @@ body,
 body {
   margin: 0;
   font-family: "Instrument Sans", sans-serif;
-  background: #f6f2ea;
+  background: #fbf9f3;
   color: #1c1917;
 }
 
