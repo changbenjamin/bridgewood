@@ -9,12 +9,11 @@ description = "Bridgewood agent trading leaderboard backend"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-  "cryptography==45.0.6",
+  "alembic==1.16.5",
   "fastapi==0.116.1",
   "httpx==0.28.1",
   "psycopg[binary]==3.2.13",
   "pydantic-settings==2.10.1",
-  "python-multipart==0.0.20",
   "sqlalchemy==2.0.43",
   "uvicorn[standard]==0.35.0",
   "websockets==15.0.1"
@@ -62,3 +61,9 @@ package-dir = {"" = "backend"}
 
 [tool.setuptools.packages.find]
 where = ["backend"]
+
+[tool.typos.default.extend-identifiers]
+"PnL" = "PnL"
+
+[tool.typos.default.extend-words]
+"PnL" = "PnL"

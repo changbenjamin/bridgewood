@@ -3,173 +3,168 @@ from __future__ import annotations
 
 import argparse
 import json
-import time
+from datetime import datetime, timedelta, timezone
 
 import httpx
 
 
-def create_user(
-    client: httpx.Client, base_url: str, admin_token: str, username: str
-) -> dict:
-    response = client.post(
-        f"{base_url}/v1/users",
-        json={
-            "username": username,
-            "alpaca_api_key": f"mock-{username}-key",
-            "alpaca_secret_key": f"mock-{username}-secret",
-            "alpaca_base_url": "https://paper-api.alpaca.markets",
-        },
-        headers={"X-Admin-Token": admin_token},
-    )
+def signup_user(client: httpx.Client, base_url: str, username: str) -> dict:
+    response = client.post(f"{base_url}/v1/signup", json={"username": username})
     response.raise_for_status()
     return response.json()
 
 
 def create_agent(
-    client: httpx.Client, base_url: str, admin_token: str, user_id: str, name: str
+    client: httpx.Client,
+    base_url: str,
+    account_api_key: str,
+    name: str,
+    trading_mode: str,
+    starting_cash: float = 10000,
 ) -> dict:
     response = client.post(
-        f"{base_url}/v1/agents",
+        f"{base_url}/v1/account/agents",
         json={
-            "user_id": user_id,
             "name": name,
-            "starting_cash": 10000,
-            "real_money": False,
+            "starting_cash": starting_cash,
+            "trading_mode": trading_mode,
         },
-        headers={"X-Admin-Token": admin_token},
+        headers={"Authorization": f"Bearer {account_api_key}"},
     )
     response.raise_for_status()
     return response.json()
 
 
-def submit_cycle(
-    client: httpx.Client,
-    base_url: str,
-    api_key: str,
-    trades: list[dict],
-    rationale: str,
-    cost: float,
-) -> None:
+def report_executions(
+    client: httpx.Client, base_url: str, agent_api_key: str, executions: list[dict]
+) -> dict:
     response = client.post(
-        f"{base_url}/v1/trades",
-        json={
-            "trades": trades,
-            "rationale": rationale,
-            "cycle_cost": cost,
-        },
-        headers={"Authorization": f"Bearer {api_key}"},
+        f"{base_url}/v1/executions",
+        json={"executions": executions},
+        headers={"Authorization": f"Bearer {agent_api_key}"},
     )
     response.raise_for_status()
+    return response.json()
+
+
+def iso(minutes_ago: int) -> str:
+    timestamp = datetime.now(timezone.utc) - timedelta(minutes=minutes_ago)
+    return timestamp.isoformat().replace("+00:00", "Z")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Seed the app with demo users, agents, and trades."
+        description="Seed Bridgewood with demo accounts, agents, and reported executions."
     )
     parser.add_argument("--base-url", default="http://localhost:8000")
-    parser.add_argument("--admin-token", default="bridgewood-admin-token")
     args = parser.parse_args()
 
-    suffix = int(time.time())
+    suffix = int(datetime.now(timezone.utc).timestamp())
     with httpx.Client(timeout=30) as client:
-        ben = create_user(client, args.base_url, args.admin_token, f"ben-{suffix}")
-        matt = create_user(client, args.base_url, args.admin_token, f"matt-{suffix}")
+        ben = signup_user(client, args.base_url, f"ben-{suffix}")
+        matt = signup_user(client, args.base_url, f"matt-{suffix}")
 
         agents = [
             create_agent(
-                client, args.base_url, args.admin_token, ben["user_id"], "GPT 5.4"
+                client,
+                args.base_url,
+                ben["account_api_key"],
+                "GPT 5.4",
+                "paper",
             ),
             create_agent(
                 client,
                 args.base_url,
-                args.admin_token,
-                ben["user_id"],
+                ben["account_api_key"],
                 "Claude Opus 4.6",
+                "live",
             ),
             create_agent(
                 client,
                 args.base_url,
-                args.admin_token,
-                matt["user_id"],
+                matt["account_api_key"],
                 "Gemini 3.1 Pro",
+                "paper",
             ),
         ]
 
-        orders = [
-            (
-                agents[0]["api_key"],
-                [
-                    {
-                        "symbol": "AAPL",
-                        "side": "buy",
-                        "amount_dollars": 600,
-                        "client_order_id": f"aapl-{suffix}-1",
-                    },
-                    {
-                        "symbol": "NVDA",
-                        "side": "buy",
-                        "amount_dollars": 900,
-                        "client_order_id": f"nvda-{suffix}-2",
-                    },
-                ],
-                "Leaning into liquid large-cap names with strong relative strength.",
-                184.2,
-            ),
-            (
-                agents[1]["api_key"],
-                [
-                    {
-                        "symbol": "MSFT",
-                        "side": "buy",
-                        "amount_dollars": 750,
-                        "client_order_id": f"msft-{suffix}-1",
-                    },
-                    {
-                        "symbol": "META",
-                        "side": "buy",
-                        "amount_dollars": 520,
-                        "client_order_id": f"meta-{suffix}-2",
-                    },
-                ],
-                "Favoring software and platform cash flows while keeping dry powder.",
-                146.4,
-            ),
-            (
-                agents[2]["api_key"],
-                [
-                    {
-                        "symbol": "TSLA",
-                        "side": "buy",
-                        "amount_dollars": 700,
-                        "client_order_id": f"tsla-{suffix}-1",
-                    },
-                    {
-                        "symbol": "AAPL",
-                        "side": "buy",
-                        "amount_dollars": 350,
-                        "client_order_id": f"aapl-{suffix}-3",
-                    },
-                ],
-                "Taking a momentum sleeve with a small quality hedge.",
-                92.8,
-            ),
-            (
-                agents[2]["api_key"],
-                [
-                    {
-                        "symbol": "MSFT",
-                        "side": "buy",
-                        "amount_dollars": 220,
-                        "client_order_id": f"msft-{suffix}-3",
-                    },
-                ],
-                "Adding a small software position after the initial momentum sleeve.",
-                31.2,
-            ),
-        ]
-
-        for api_key, trades, rationale, cost in orders:
-            submit_cycle(client, args.base_url, api_key, trades, rationale, cost)
+        report_executions(
+            client,
+            args.base_url,
+            agents[0]["api_key"],
+            [
+                {
+                    "external_order_id": f"gpt-aapl-{suffix}-1",
+                    "symbol": "AAPL",
+                    "side": "buy",
+                    "quantity": 3.2,
+                    "price": 187.52,
+                    "executed_at": iso(120),
+                },
+                {
+                    "external_order_id": f"gpt-nvda-{suffix}-2",
+                    "symbol": "NVDA",
+                    "side": "buy",
+                    "quantity": 0.75,
+                    "price": 906.11,
+                    "executed_at": iso(105),
+                },
+            ],
+        )
+        report_executions(
+            client,
+            args.base_url,
+            agents[1]["api_key"],
+            [
+                {
+                    "external_order_id": f"claude-msft-{suffix}-1",
+                    "symbol": "MSFT",
+                    "side": "buy",
+                    "quantity": 1.6,
+                    "price": 421.23,
+                    "executed_at": iso(90),
+                },
+                {
+                    "external_order_id": f"claude-meta-{suffix}-2",
+                    "symbol": "META",
+                    "side": "buy",
+                    "quantity": 1.1,
+                    "price": 514.90,
+                    "executed_at": iso(75),
+                },
+            ],
+        )
+        report_executions(
+            client,
+            args.base_url,
+            agents[2]["api_key"],
+            [
+                {
+                    "external_order_id": f"gemini-tsla-{suffix}-1",
+                    "symbol": "TSLA",
+                    "side": "buy",
+                    "quantity": 4.0,
+                    "price": 171.84,
+                    "executed_at": iso(60),
+                },
+                {
+                    "external_order_id": f"gemini-aapl-{suffix}-2",
+                    "symbol": "AAPL",
+                    "side": "buy",
+                    "quantity": 1.5,
+                    "price": 187.52,
+                    "executed_at": iso(45),
+                },
+                {
+                    "external_order_id": f"gemini-tsla-{suffix}-3",
+                    "symbol": "TSLA",
+                    "side": "sell",
+                    "quantity": 1.0,
+                    "price": 176.24,
+                    "executed_at": iso(30),
+                },
+            ],
+        )
 
         print(json.dumps({"seeded_agents": agents}, indent=2))
 
