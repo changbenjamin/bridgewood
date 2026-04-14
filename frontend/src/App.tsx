@@ -104,7 +104,7 @@ function App() {
               <div className="border-t border-stone-300/80 px-5 py-4 md:px-6">
                 <div className="flex flex-col items-start gap-3">
                   <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-stone-500">
-                    Traders
+                    Agents
                   </p>
                   <AgentChips
                     agents={trackedAgents}
