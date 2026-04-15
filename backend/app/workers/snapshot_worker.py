@@ -2,9 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, time, timedelta
+from datetime import datetime, timedelta
 from decimal import Decimal
-from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 
@@ -18,9 +17,6 @@ from app.services.snapshot_store import (
 
 
 logger = logging.getLogger(__name__)
-EASTERN_TZ = ZoneInfo("America/New_York")
-MARKET_OPEN = time(hour=9, minute=30)
-MARKET_CLOSE = time(hour=16, minute=0)
 
 
 class SnapshotWorker:
@@ -56,13 +52,6 @@ class SnapshotWorker:
             "last_error_message": self.last_error_message,
         }
 
-    def _is_market_hours(self, moment: datetime) -> bool:
-        eastern = moment.astimezone(EASTERN_TZ)
-        if eastern.weekday() >= 5:
-            return False
-        current_time = eastern.time()
-        return MARKET_OPEN <= current_time <= MARKET_CLOSE
-
     async def run(self) -> None:
         while True:
             try:
@@ -75,9 +64,6 @@ class SnapshotWorker:
 
     async def maybe_snapshot(self) -> None:
         now = utc_now().replace(second=0, microsecond=0)
-        if not self._is_market_hours(now):
-            return
-
         slot = now - timedelta(minutes=now.minute % self.interval_minutes)
         if self._last_slot == slot:
             return

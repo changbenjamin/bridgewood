@@ -79,7 +79,7 @@ class MarketDataClient:
             return {}
 
         response = await client.get(
-            f"{settings.alpaca_data_url}/v2/stocks/trades/latest",
+            f"{settings.alpaca_data_url}/v2/stocks/snapshots",
             headers=self._headers(),
             params={
                 "symbols": ",".join(equities),
@@ -88,12 +88,39 @@ class MarketDataClient:
         )
         if response.status_code >= 400:
             raise MarketDataError(response.text)
-        payload = response.json().get("trades", {})
-        return {
-            symbol: to_decimal(data["p"])
-            for symbol, data in payload.items()
-            if data.get("p") is not None
-        }
+        payload = response.json().get("snapshots", {})
+        prices: dict[str, Decimal] = {}
+        for symbol, snapshot in payload.items():
+            price = self._extract_alpaca_equity_price(snapshot)
+            if price is not None:
+                prices[symbol] = price
+        return prices
+
+    def _extract_alpaca_equity_price(self, snapshot: Any) -> Decimal | None:
+        if not isinstance(snapshot, dict):
+            return None
+
+        latest_trade = snapshot.get("latestTrade") or {}
+        trade_price = latest_trade.get("p")
+        if trade_price is not None:
+            return to_decimal(trade_price)
+
+        latest_quote = snapshot.get("latestQuote") or {}
+        bid_price = latest_quote.get("bp")
+        ask_price = latest_quote.get("ap")
+        if bid_price is not None and ask_price is not None:
+            bid = Decimal(str(bid_price))
+            ask = Decimal(str(ask_price))
+            if bid > 0 and ask > 0:
+                return to_decimal((bid + ask) / Decimal("2"))
+
+        for bar_key in ("minuteBar", "dailyBar", "prevDailyBar"):
+            bar = snapshot.get(bar_key) or {}
+            close = bar.get("c")
+            if close is not None:
+                return to_decimal(close)
+
+        return None
 
     async def _get_alpaca_equity_bars(
         self,
@@ -187,7 +214,7 @@ class MarketDataClient:
             params={
                 "interval": "1m",
                 "range": "1d",
-                "includePrePost": "false",
+                "includePrePost": "true",
             },
             headers=YAHOO_HEADERS,
         )
@@ -200,10 +227,20 @@ class MarketDataClient:
             return None
 
         result = results[0]
+        price = self._extract_yahoo_equity_price(result)
+        if price is not None:
+            return symbol, price
+        return None
+
+    def _extract_yahoo_equity_price(self, result: Any) -> Decimal | None:
+        if not isinstance(result, dict):
+            return None
+
         meta = result.get("meta", {})
-        regular_market_price = meta.get("regularMarketPrice")
-        if regular_market_price is not None:
-            return symbol, to_decimal(regular_market_price)
+        for key in ("postMarketPrice", "preMarketPrice", "regularMarketPrice"):
+            price = meta.get(key)
+            if price is not None:
+                return to_decimal(price)
 
         quotes = result.get("indicators", {}).get("quote", [])
         if not quotes:
@@ -212,7 +249,7 @@ class MarketDataClient:
         closes = quotes[0].get("close", [])
         for close in reversed(closes):
             if close is not None:
-                return symbol, to_decimal(close)
+                return to_decimal(close)
         return None
 
     async def _get_yahoo_equity_prices(

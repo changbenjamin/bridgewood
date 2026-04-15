@@ -4,6 +4,7 @@ import math
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from statistics import mean, pstdev
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -29,6 +30,7 @@ from app.services.portfolio_engine import (
 
 
 settings = get_settings()
+EASTERN_TZ = ZoneInfo("America/New_York")
 
 
 def _benchmark_id(symbol: str) -> str:
@@ -45,6 +47,14 @@ def _benchmark_name(symbol: str) -> str:
 
 def _display_name(agent: Agent) -> str:
     return f"{agent.name}{' *' if agent.is_paper else ''}"
+
+
+def _snapshot_trading_day(snapshot_at: datetime) -> date:
+    eastern = snapshot_at.astimezone(EASTERN_TZ)
+    trading_day = eastern.date()
+    if eastern.hour >= 20:
+        return trading_day + timedelta(days=1)
+    return trading_day
 
 
 def get_snapshot_lookback(range_key: str) -> datetime | None:
@@ -74,7 +84,7 @@ def get_daily_change_pct(db: Session, agent: Agent) -> float:
         return 0.0
     grouped: dict[date, PortfolioSnapshot] = {}
     for snapshot in snapshots:
-        grouped[snapshot.snapshot_at.date()] = snapshot
+        grouped[_snapshot_trading_day(snapshot.snapshot_at)] = snapshot
     closing_snapshots = list(grouped.values())
     if len(closing_snapshots) < 2:
         return 0.0
@@ -108,7 +118,7 @@ def compute_sharpe(db: Session, agent_id: str) -> float:
 
     closing_snapshots: dict[date, PortfolioSnapshot] = {}
     for snapshot in snapshots:
-        closing_snapshots[snapshot.snapshot_at.date()] = snapshot
+        closing_snapshots[_snapshot_trading_day(snapshot.snapshot_at)] = snapshot
 
     values = list(closing_snapshots.values())
     if len(values) < 2:
