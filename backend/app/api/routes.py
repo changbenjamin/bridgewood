@@ -124,6 +124,50 @@ def _format_decimal(value: Decimal) -> str:
     return text
 
 
+def _active_agent_ids(db: Session) -> list[str]:
+    return list(
+        db.scalars(select(Agent.id).where(Agent.is_active.is_(True)).order_by(Agent.id))
+    )
+
+
+def _position_symbols_for_agents(db: Session, agent_ids: list[str]) -> list[str]:
+    if not agent_ids:
+        return []
+    return list(
+        db.scalars(
+            select(Position.symbol)
+            .where(Position.agent_id.in_(agent_ids))
+            .distinct()
+            .order_by(Position.symbol.asc())
+        )
+    )
+
+
+async def _get_prices_for_agents(
+    request: Request,
+    db: Session,
+    *,
+    agent_ids: list[str],
+    include_benchmark: bool = False,
+) -> dict[str, Decimal]:
+    price_feed = request.app.state.price_feed_service
+    cached = price_feed.snapshot()
+    missing = [
+        symbol
+        for symbol in _position_symbols_for_agents(db, agent_ids)
+        if symbol not in cached
+    ]
+    if include_benchmark and settings.benchmark_symbol not in cached:
+        missing.append(settings.benchmark_symbol)
+    if missing:
+        latest = await price_feed.refresh_symbols(sorted(set(missing)))
+        cached.update(latest)
+    elif not cached and include_benchmark:
+        await price_feed.refresh_symbols([settings.benchmark_symbol])
+        cached = price_feed.snapshot()
+    return cached
+
+
 def _build_execution_summary(agent: Agent, execution: Execution) -> str:
     action = "bought" if execution.side == ExecutionSide.BUY else "sold"
     quantity = _format_decimal(Decimal(execution.quantity))
@@ -304,10 +348,7 @@ def _agent_for_account(db: Session, *, account: User, agent_id: str) -> Agent:
 async def _build_live_portfolio(
     request: Request, db: Session, *, agent: Agent
 ) -> PortfolioView:
-    prices = request.app.state.price_feed_service.snapshot()
-    if not prices:
-        await request.app.state.price_feed_service.refresh_once()
-        prices = request.app.state.price_feed_service.snapshot()
+    prices = await _get_prices_for_agents(request, db, agent_ids=[agent.id])
     return build_portfolio(
         db,
         agent,
@@ -535,7 +576,12 @@ async def _ensure_benchmark_initialized(request: Request, db: Session) -> None:
 
 
 async def _broadcast_cached_leaderboard(request: Request, db: Session) -> None:
-    prices = request.app.state.price_feed_service.snapshot()
+    prices = await _get_prices_for_agents(
+        request,
+        db,
+        agent_ids=_active_agent_ids(db),
+        include_benchmark=True,
+    )
     timestamp = (
         request.app.state.price_feed_service.last_updated_at if prices else utc_now()
     )
@@ -1022,7 +1068,7 @@ async def report_executions(
         db.rollback()
         raise
 
-    prices = request.app.state.price_feed_service.snapshot()
+    prices = await _get_prices_for_agents(request, db, agent_ids=[agent.id])
     portfolio = build_portfolio(
         db,
         agent,
@@ -1048,11 +1094,13 @@ async def get_leaderboard(
     request: Request, db: Session = Depends(get_db)
 ) -> LeaderboardPayload:
     await _ensure_benchmark_initialized(request, db)
-    if not request.app.state.price_feed_service.snapshot():
-        await request.app.state.price_feed_service.refresh_once()
-    return build_leaderboard_payload(
-        db, request.app.state.price_feed_service.snapshot()
+    prices = await _get_prices_for_agents(
+        request,
+        db,
+        agent_ids=_active_agent_ids(db),
+        include_benchmark=True,
     )
+    return build_leaderboard_payload(db, prices)
 
 
 @router.get("/activity", response_model=ActivityPage)
@@ -1073,10 +1121,12 @@ async def get_snapshots(
     db: Session = Depends(get_db),
 ) -> list[SnapshotPoint]:
     await _ensure_benchmark_initialized(request, db)
-    if settings.benchmark_symbol not in request.app.state.price_feed_service.snapshot():
-        await request.app.state.price_feed_service.refresh_symbols(
-            [settings.benchmark_symbol]
-        )
+    await _get_prices_for_agents(
+        request,
+        db,
+        agent_ids=[],
+        include_benchmark=True,
+    )
     snapshots = build_snapshot_series(db, range)
     return await _ensure_benchmark_snapshots(
         request,
@@ -1093,11 +1143,13 @@ async def get_dashboard(
     db: Session = Depends(get_db),
 ) -> DashboardBootstrap:
     await _ensure_benchmark_initialized(request, db)
-    if not request.app.state.price_feed_service.snapshot():
-        await request.app.state.price_feed_service.refresh_once()
-    leaderboard = build_leaderboard_payload(
-        db, request.app.state.price_feed_service.snapshot()
+    prices = await _get_prices_for_agents(
+        request,
+        db,
+        agent_ids=_active_agent_ids(db),
+        include_benchmark=True,
     )
+    leaderboard = build_leaderboard_payload(db, prices)
     activity = _paginate_activity(db, limit=settings.activity_page_size).items
     snapshots = build_snapshot_series(db, range)
     snapshots = await _ensure_benchmark_snapshots(
