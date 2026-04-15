@@ -38,6 +38,7 @@ function appendLiveSnapshots(
     agent_id: agent.id,
     name: agent.name,
     total_value: agent.total_value,
+    return_pct: agent.return_pct,
     snapshot_at: timestamp,
     is_benchmark: agent.is_benchmark,
     icon_url: agent.icon_url,
@@ -59,29 +60,15 @@ function appendLiveSnapshots(
   return trimSnapshots(merged, range);
 }
 
-function leaderboardToSnapshots(
-  leaderboard: LeaderboardPayload,
-): SnapshotPoint[] {
-  return leaderboard.agents.map((agent) => ({
-    agent_id: agent.id,
-    name: agent.name,
-    total_value: agent.total_value,
-    snapshot_at: leaderboard.timestamp,
-    is_benchmark: agent.is_benchmark,
-    icon_url: agent.icon_url,
-  }));
-}
-
 function toActivityItem(event: ActivityPayload): ActivityItem {
   return {
-    id: Date.parse(event.timestamp) + event.agent_id.length,
+    id: `${event.agent_id}:${event.timestamp}`,
     agent_id: event.agent_id,
     agent_name: event.agent_name,
     icon_url: event.icon_url,
-    event_type: "cycle_summary",
+    event_type: "execution",
     summary: event.summary,
     metadata: {},
-    cost_tokens: event.cost_tokens,
     created_at: event.timestamp,
   };
 }
@@ -113,9 +100,7 @@ export function useDashboard() {
         setLeaderboard(payload.leaderboard);
         setActivity(payload.activity);
         setSnapshots(
-          payload.snapshots.length > 0
-            ? payload.snapshots
-            : leaderboardToSnapshots(payload.leaderboard),
+          appendLiveSnapshots(payload.snapshots, payload.leaderboard, range),
         );
       } catch (loadError) {
         if (!active) {
@@ -168,7 +153,12 @@ export function useDashboard() {
       );
       return source;
     }
-    source.sort((left, right) => right.total_value - left.total_value);
+    source.sort((left, right) => {
+      if (right.return_pct !== left.return_pct) {
+        return right.return_pct - left.return_pct;
+      }
+      return right.total_value - left.total_value;
+    });
     return source;
   }, [leaderboardMode, visibleAgents]);
 

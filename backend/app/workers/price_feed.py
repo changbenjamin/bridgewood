@@ -1,22 +1,26 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from datetime import datetime
 from decimal import Decimal
 
 from sqlalchemy import select
 
 from app.core.config import get_settings
-from app.models.entities import BenchmarkState, Position, User
+from app.core.time import utc_now
+from app.models.entities import Agent, Position
 from app.schemas.api import LeaderboardPayload
-from app.services.alpaca_client import (
-    AlpacaCredentials,
-    get_broker_gateway,
-    get_live_benchmark_price,
-)
 from app.services.broadcaster import ConnectionManager
 from app.services.leaderboard import build_leaderboard_payload
-from app.services.security import decrypt_secret
+from app.services.market_data import (
+    MarketDataClient,
+    MarketDataError,
+    MarketDataResult,
+)
+
+
+logger = logging.getLogger(__name__)
 
 
 class PriceFeedService:
@@ -29,9 +33,14 @@ class PriceFeedService:
         self.session_factory = session_factory
         self.connection_manager = connection_manager
         self.refresh_seconds = refresh_seconds
-        self.gateway = get_broker_gateway()
+        self.market_data = MarketDataClient()
         self.prices: dict[str, Decimal] = {}
-        self.last_updated_at: datetime = datetime.utcnow()
+        self.last_updated_at: datetime = utc_now()
+        self.last_success_at: datetime | None = None
+        self.last_error_at: datetime | None = None
+        self.last_error_message: str | None = None
+        self.last_provider: str | None = None
+        self.consecutive_failures = 0
         self._task: asyncio.Task | None = None
         self.settings = get_settings()
 
@@ -53,47 +62,79 @@ class PriceFeedService:
     def as_float_map(self) -> dict[str, float]:
         return {symbol: float(price) for symbol, price in self.prices.items()}
 
-    async def refresh_once(self) -> LeaderboardPayload | None:
+    def _record_success(self, provider: str | None) -> None:
+        self.last_updated_at = utc_now()
+        self.last_success_at = self.last_updated_at
+        self.last_error_at = None
+        self.last_error_message = None
+        self.last_provider = provider
+        self.consecutive_failures = 0
+
+    def _record_error(self, exc: Exception) -> None:
+        self.last_error_at = utc_now()
+        self.last_error_message = str(exc)
+        self.consecutive_failures += 1
+
+    def health_summary(self) -> dict[str, object]:
+        alpaca_configured = bool(
+            self.settings.alpaca_api_key and self.settings.alpaca_secret_key
+        )
+        age_seconds = None
+        healthy = self.last_success_at is not None
+        if self.last_success_at is not None:
+            age_seconds = (utc_now() - self.last_success_at).total_seconds()
+        if self.last_success_at and self.last_error_at:
+            healthy = self.last_success_at >= self.last_error_at
+        if healthy and self.last_success_at is not None:
+            if age_seconds is not None and age_seconds > max(
+                60, self.refresh_seconds * 4
+            ):
+                healthy = False
+
+        return {
+            "configured": True,
+            "alpaca_configured": alpaca_configured,
+            "healthy": healthy,
+            "provider": self.last_provider,
+            "last_success_at": self.last_success_at,
+            "last_error_at": self.last_error_at,
+            "last_error_message": self.last_error_message,
+            "last_updated_at": self.last_updated_at,
+            "stale_seconds": age_seconds,
+            "consecutive_failures": self.consecutive_failures,
+        }
+
+    async def refresh_symbols(self, symbols: list[str]) -> dict[str, Decimal]:
+        try:
+            result: MarketDataResult = await self.market_data.get_latest_prices(symbols)
+        except (MarketDataError, Exception) as exc:
+            self._record_error(exc)
+            logger.exception(
+                "Market data refresh failed for symbols: %s", symbols, exc_info=exc
+            )
+            return {}
+
+        latest = result.prices
+        if latest:
+            self.prices.update(latest)
+            self._record_success(result.provider)
+        return latest
+
+    async def refresh_once(self) -> LeaderboardPayload:
         with self.session_factory() as db:
-            benchmark_symbol = self.settings.benchmark_symbol
             symbols = {
-                position.symbol for position in db.scalars(select(Position)).all()
+                position.symbol
+                for position in db.scalars(
+                    select(Position)
+                    .join(Agent, Agent.id == Position.agent_id)
+                    .where(Agent.is_active.is_(True))
+                ).all()
             }
-            benchmark_state = db.get(BenchmarkState, 1)
-            if benchmark_state:
-                symbols.add(benchmark_state.symbol)
-            symbols.add(benchmark_symbol)
-            if not symbols:
-                return None
+            symbols.add(self.settings.benchmark_symbol)
 
-            credentials = self._get_any_credentials(db)
-            non_benchmark_symbols = sorted(
-                symbol for symbol in symbols if symbol != benchmark_symbol
-            )
+        await self.refresh_symbols(sorted(symbols))
 
-            if non_benchmark_symbols and hasattr(self.gateway, "advance_prices"):
-                maybe_prices = await self.gateway.advance_prices(non_benchmark_symbols)
-                if maybe_prices:
-                    self.prices.update(maybe_prices)
-
-            if non_benchmark_symbols:
-                latest = await self.gateway.get_latest_prices(
-                    credentials, non_benchmark_symbols
-                )
-                self.prices.update(latest)
-
-            benchmark_price = await get_live_benchmark_price(
-                benchmark_symbol, credentials
-            )
-            if benchmark_price is None:
-                if benchmark_symbol in self.prices:
-                    benchmark_price = self.prices[benchmark_symbol]
-                elif benchmark_state is not None:
-                    benchmark_price = Decimal(str(benchmark_state.starting_price))
-            if benchmark_price is not None:
-                self.prices[benchmark_symbol] = benchmark_price
-
-            self.last_updated_at = datetime.utcnow()
+        with self.session_factory() as db:
             payload = build_leaderboard_payload(
                 db, self.prices, timestamp=self.last_updated_at
             )
@@ -105,50 +146,7 @@ class PriceFeedService:
         while True:
             try:
                 await self.refresh_once()
-            except Exception:
-                pass
+            except Exception as exc:  # pragma: no cover - background safety
+                self._record_error(exc)
+                logger.exception("Price feed loop failed.", exc_info=exc)
             await asyncio.sleep(self.refresh_seconds)
-
-    @staticmethod
-    def _legacy_looks_paper(base_url: str | None) -> bool:
-        return bool(base_url and "paper" in base_url.lower())
-
-    @staticmethod
-    def _decrypt_optional_secret(value: str | None) -> str | None:
-        return decrypt_secret(value) if value is not None else None
-
-    def _get_any_credentials(self, db) -> AlpacaCredentials | None:
-        user = db.scalar(select(User).order_by(User.created_at.asc()))
-        if user is None:
-            return None
-
-        paper_api_key = self._decrypt_optional_secret(user.alpaca_paper_api_key)
-        paper_secret_key = self._decrypt_optional_secret(user.alpaca_paper_secret_key)
-        if paper_api_key and paper_secret_key:
-            return AlpacaCredentials(
-                api_key=paper_api_key,
-                secret_key=paper_secret_key,
-                base_url=self.settings.alpaca_paper_trading_url,
-            )
-
-        live_api_key = self._decrypt_optional_secret(user.alpaca_live_api_key)
-        live_secret_key = self._decrypt_optional_secret(user.alpaca_live_secret_key)
-        if live_api_key and live_secret_key:
-            return AlpacaCredentials(
-                api_key=live_api_key,
-                secret_key=live_secret_key,
-                base_url=self.settings.alpaca_live_trading_url,
-            )
-
-        if user.alpaca_api_key and user.alpaca_secret_key:
-            return AlpacaCredentials(
-                api_key=decrypt_secret(user.alpaca_api_key),
-                secret_key=decrypt_secret(user.alpaca_secret_key),
-                base_url=(
-                    self.settings.alpaca_paper_trading_url
-                    if self._legacy_looks_paper(user.alpaca_base_url)
-                    else self.settings.alpaca_live_trading_url
-                ),
-            )
-
-        return None

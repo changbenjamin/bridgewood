@@ -1,4 +1,5 @@
 import { colorForAgent } from "../lib/palette";
+import { stripPaperMarker } from "../lib/format";
 import type { LeaderboardEntry } from "../types";
 
 interface Props {
@@ -13,7 +14,7 @@ export function AgentChips({ agents, hiddenIds, onToggle }: Props) {
   }
 
   return (
-    <div className="flex flex-wrap gap-3">
+    <div className="flex flex-wrap gap-2.5">
       {agents.map((agent) => {
         const active = !hiddenIds.includes(agent.id);
         const color = colorForAgent(agent.id, agent.is_benchmark);
@@ -23,17 +24,19 @@ export function AgentChips({ agents, hiddenIds, onToggle }: Props) {
             key={agent.id}
             type="button"
             onClick={() => onToggle(agent.id)}
-            className={`inline-flex items-center gap-2 rounded-xl border px-3.5 py-2 text-sm transition ${
+            className={`inline-flex items-center gap-2 border px-3 py-2 transition ${
               active
-                ? "border-stone-300 bg-white text-stone-900 shadow-sm"
-                : "border-stone-200 bg-stone-50 text-stone-400"
+                ? "border-stone-300 bg-[#fffdf8] text-stone-900"
+                : "border-stone-200 bg-transparent text-stone-400"
             }`}
           >
             <span
               className="h-2.5 w-2.5 rounded-full"
               style={{ backgroundColor: color }}
             />
-            <span>{agent.name}</span>
+            <span className="whitespace-nowrap text-[12px] leading-none font-normal tracking-normal">
+              {stripPaperMarker(agent.name)}
+            </span>
           </button>
         );
       })}

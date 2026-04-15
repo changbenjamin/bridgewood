@@ -16,11 +16,11 @@ services:
       dockerfile: backend/Dockerfile
     environment:
       DATABASE_URL: postgresql+psycopg://bridgewood:bridgewood@postgres:5432/bridgewood
-      ADMIN_TOKEN: bridgewood-admin-token
-      FERNET_KEY: p63UvtXx1b9s_9g9qxGzbXClSH6sF8RClbQfmykUKQ8=
-      MOCK_BROKER_MODE: "true"
+      ALPACA_API_KEY: ${ALPACA_API_KEY:-}
+      ALPACA_SECRET_KEY: ${ALPACA_SECRET_KEY:-}
       PRICE_REFRESH_SECONDS: "15"
-      SNAPSHOT_INTERVAL_MINUTES: "5"
+      SNAPSHOT_INTERVAL_MINUTES: "2"
+      ALPACA_EQUITY_FEED: "iex"
     depends_on:
       - postgres
     ports:

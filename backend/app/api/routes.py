@@ -1,319 +1,198 @@
 from __future__ import annotations
 
-import re
 from datetime import datetime
 from decimal import Decimal
-from uuid import uuid4
+from typing import Literal
 
 from fastapi import (
     APIRouter,
     Depends,
-    HTTPException,
     Query,
     Request,
     WebSocket,
     WebSocketDisconnect,
     status,
 )
-from fastapi.responses import JSONResponse
-from sqlalchemy import select
+from sqlalchemy import and_, delete, or_, select
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_current_account_user, get_current_agent, require_admin
+from app.api.deps import get_current_account_user, get_current_agent
 from app.core.config import get_settings
+from app.core.errors import BridgewoodError
+from app.core.pagination import PageCursor, decode_cursor, encode_cursor
+from app.core.time import utc_now
 from app.db.session import get_db
 from app.models.entities import (
-    ActivityEventType,
-    ActivityLog,
     Agent,
     BenchmarkState,
+    CashAdjustment,
+    CashAdjustmentKind,
+    Execution,
+    ExecutionSide,
+    PortfolioSnapshot,
     Position,
-    Trade,
-    TradeSide,
-    TradeStatus,
+    TradingMode,
     User,
 )
 from app.schemas.api import (
-    ActivityItem,
-    ActivityPayload,
     AccountAgentCreateRequest,
     AccountAgentRenameRequest,
     AccountAgentSummary,
     AccountIdentity,
     AccountOverview,
-    AgentCreateRequest,
+    ActivityItem,
+    ActivityPage,
+    ActivityPayload,
+    CashAdjustmentCreateRequest,
+    CashAdjustmentCreateResponse,
+    CashAdjustmentItem,
     AgentCreateResponse,
+    AgentDeactivationResponse,
     AgentIdentity,
+    AgentKeyRotationResponse,
+    AgentResetResponse,
     DashboardBootstrap,
+    ExecutionListItem,
+    ExecutionPage,
+    ExecutionReportRequest,
+    ExecutionReportResponse,
+    ExecutionResult,
     LeaderboardPayload,
-    MockAgentCreateRequest,
-    MockAgentCreateResponse,
     PortfolioView,
     PricesResponse,
     SignupRequest,
     SignupResponse,
+    SnapshotPoint,
     SnapshotRange,
-    TradeExecutionRequest,
-    TradeExecutionResponse,
-    TradeIntent,
-    TradeResult,
-    TradeSubmissionRequest,
-    TradeSubmissionResponse,
-    UserCreateRequest,
-    UserCreateResponse,
 )
-from app.services.alpaca_client import (
-    AlpacaCredentials,
-    BrokerError,
-    get_broker_gateway,
-    get_live_benchmark_price,
+from app.services.leaderboard import (
+    build_leaderboard_payload,
+    build_snapshot_series,
+    get_snapshot_lookback,
 )
-from app.services.leaderboard import build_leaderboard_payload, build_snapshot_series
+from app.services.market_data import MarketDataError
 from app.services.portfolio_engine import (
-    apply_fill_to_position,
+    apply_execution_to_position,
     build_portfolio,
-    compute_cash,
-    estimate_sell_quantity,
+    cash_adjustment_total,
+    gross_notional,
+    money,
+    notional,
+    price_value,
+    quantity_value,
+    signed_cash_adjustment_amount,
 )
 from app.services.security import (
-    decrypt_secret,
-    encrypt_secret,
     generate_account_api_key,
     generate_agent_api_key,
     hash_api_key,
 )
-from app.workers.snapshot_worker import is_market_hours
 
 
 router = APIRouter()
 settings = get_settings()
-gateway = get_broker_gateway()
 
 
-def _money(value: float | Decimal | None) -> float | None:
-    if value is None:
-        return None
-    return round(float(value), 4)
+def _display_name(agent: Agent) -> str:
+    return f"{agent.name}{' *' if agent.is_paper else ''}"
 
 
-def _legacy_looks_paper(base_url: str | None) -> bool:
-    return bool(base_url and "paper" in base_url.lower())
+def _benchmark_id(symbol: str) -> str:
+    return f"benchmark:{symbol}"
 
 
-def _encrypt_optional_secret(value: str | None) -> str | None:
-    return encrypt_secret(value) if value is not None else None
-
-
-def _decrypt_optional_secret(value: str | None) -> str | None:
-    return decrypt_secret(value) if value is not None else None
-
-
-def _has_paper_credentials(user: User) -> bool:
-    return bool(
-        (user.alpaca_paper_api_key and user.alpaca_paper_secret_key)
-        or (_legacy_looks_paper(user.alpaca_base_url) and user.alpaca_api_key)
+def _benchmark_name(symbol: str) -> str:
+    return (
+        "S&P 500 Index"
+        if symbol == settings.benchmark_symbol
+        else f"{symbol} Benchmark"
     )
 
 
-def _has_live_credentials(user: User) -> bool:
-    return bool(
-        (user.alpaca_live_api_key and user.alpaca_live_secret_key)
-        or (not _legacy_looks_paper(user.alpaca_base_url) and user.alpaca_api_key)
+def _benchmark_timeframe(range_key: SnapshotRange) -> str:
+    if range_key == "1D":
+        return "5Min"
+    if range_key == "1W":
+        return "30Min"
+    return "1Day"
+
+
+def _format_decimal(value: Decimal) -> str:
+    text = format(value.normalize(), "f")
+    if "." in text:
+        return text.rstrip("0").rstrip(".")
+    return text
+
+
+def _active_agent_ids(db: Session) -> list[str]:
+    return list(
+        db.scalars(select(Agent.id).where(Agent.is_active.is_(True)).order_by(Agent.id))
     )
 
 
-def _is_paper_only_account(user: User) -> bool:
-    return _has_paper_credentials(user) and not _has_live_credentials(user)
-
-
-def _get_any_user_credentials(user: User) -> AlpacaCredentials | None:
-    if _has_paper_credentials(user):
-        return _get_user_credentials_for_mode(user, real_money=False)
-    if _has_live_credentials(user):
-        return _get_user_credentials_for_mode(user, real_money=True)
-    return None
-
-
-def _get_user_credentials_for_mode(
-    user: User, *, real_money: bool
-) -> AlpacaCredentials:
-    if real_money:
-        live_api_key = _decrypt_optional_secret(user.alpaca_live_api_key)
-        live_secret_key = _decrypt_optional_secret(user.alpaca_live_secret_key)
-        if live_api_key and live_secret_key:
-            return AlpacaCredentials(
-                api_key=live_api_key,
-                secret_key=live_secret_key,
-                base_url=settings.alpaca_live_trading_url,
-            )
-        if not _legacy_looks_paper(user.alpaca_base_url):
-            return AlpacaCredentials(
-                api_key=decrypt_secret(user.alpaca_api_key),
-                secret_key=decrypt_secret(user.alpaca_secret_key),
-                base_url=user.alpaca_base_url,
-            )
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="This account does not have live Alpaca credentials configured.",
+def _position_symbols_for_agents(db: Session, agent_ids: list[str]) -> list[str]:
+    if not agent_ids:
+        return []
+    return list(
+        db.scalars(
+            select(Position.symbol)
+            .where(Position.agent_id.in_(agent_ids))
+            .distinct()
+            .order_by(Position.symbol.asc())
         )
-
-    paper_api_key = _decrypt_optional_secret(user.alpaca_paper_api_key)
-    paper_secret_key = _decrypt_optional_secret(user.alpaca_paper_secret_key)
-    if paper_api_key and paper_secret_key:
-        return AlpacaCredentials(
-            api_key=paper_api_key,
-            secret_key=paper_secret_key,
-            base_url=settings.alpaca_paper_trading_url,
-        )
-    if _legacy_looks_paper(user.alpaca_base_url):
-        return AlpacaCredentials(
-            api_key=decrypt_secret(user.alpaca_api_key),
-            secret_key=decrypt_secret(user.alpaca_secret_key),
-            base_url=user.alpaca_base_url,
-        )
-    raise HTTPException(
-        status_code=status.HTTP_400_BAD_REQUEST,
-        detail="This account does not have paper Alpaca credentials configured.",
     )
 
 
-def _slugify_username(value: str) -> str:
-    slug = re.sub(r"[^a-z0-9]+", "-", value.strip().lower()).strip("-")
-    return slug or "agent"
-
-
-def _next_mock_username(db: Session, requested_username: str | None, name: str) -> str:
-    username = requested_username.strip() if requested_username else ""
-    if username:
-        if db.scalar(select(User).where(User.username == username)):
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="Username already exists.",
-            )
-        return username
-
-    base = _slugify_username(name)
-    candidate = base
-    suffix = 1
-    while db.scalar(select(User).where(User.username == candidate)):
-        suffix += 1
-        candidate = f"{base}-{suffix}"
-    return candidate
-
-
-def _create_agent_record(
-    *,
+async def _get_prices_for_agents(
+    request: Request,
     db: Session,
-    user: User,
-    name: str,
-    starting_cash: float,
-    real_money: bool,
-    icon_url: str | None,
-) -> tuple[Agent, str]:
-    if real_money and not _has_live_credentials(user):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="This account does not have live Alpaca credentials configured.",
-        )
-    if not real_money and not _has_paper_credentials(user):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="This account does not have paper Alpaca credentials configured.",
-        )
-
-    api_key = generate_agent_api_key()
-    agent = Agent(
-        user_id=user.id,
-        name=name,
-        api_key_hash=hash_api_key(api_key),
-        api_key_prefix=api_key[:10],
-        starting_cash=Decimal(str(starting_cash)),
-        icon_url=icon_url,
-        real_money=real_money,
-        is_paper=not real_money,
-    )
-    db.add(agent)
-    db.commit()
-    db.refresh(agent)
-    return agent, api_key
-
-
-def _agent_for_account(*, db: Session, account: User, agent_id: str) -> Agent:
-    agent = db.get(Agent, agent_id)
-    if agent is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found."
-        )
-    if agent.user_id != account.id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="You do not have access to this agent.",
-        )
-    return agent
-
-
-def _create_user_record(
     *,
-    db: Session,
-    username: str,
-    alpaca_api_key: str,
-    alpaca_secret_key: str,
-    alpaca_base_url: str,
-    alpaca_paper_api_key: str | None = None,
-    alpaca_paper_secret_key: str | None = None,
-    alpaca_live_api_key: str | None = None,
-    alpaca_live_secret_key: str | None = None,
-) -> tuple[User, str]:
-    account_api_key = generate_account_api_key()
-    user = User(
-        username=username,
-        account_api_key_hash=hash_api_key(account_api_key),
-        account_api_key_prefix=account_api_key[:10],
-        alpaca_paper_api_key=_encrypt_optional_secret(alpaca_paper_api_key),
-        alpaca_paper_secret_key=_encrypt_optional_secret(alpaca_paper_secret_key),
-        alpaca_live_api_key=_encrypt_optional_secret(alpaca_live_api_key),
-        alpaca_live_secret_key=_encrypt_optional_secret(alpaca_live_secret_key),
-        alpaca_api_key=encrypt_secret(alpaca_api_key),
-        alpaca_secret_key=encrypt_secret(alpaca_secret_key),
-        alpaca_base_url=alpaca_base_url.rstrip("/"),
-    )
-    db.add(user)
-    db.commit()
-    db.refresh(user)
-    return user, account_api_key
+    agent_ids: list[str],
+    include_benchmark: bool = False,
+) -> dict[str, Decimal]:
+    price_feed = request.app.state.price_feed_service
+    cached = price_feed.snapshot()
+    missing = [
+        symbol
+        for symbol in _position_symbols_for_agents(db, agent_ids)
+        if symbol not in cached
+    ]
+    if include_benchmark and settings.benchmark_symbol not in cached:
+        missing.append(settings.benchmark_symbol)
+    if missing:
+        latest = await price_feed.refresh_symbols(sorted(set(missing)))
+        cached.update(latest)
+    elif not cached and include_benchmark:
+        await price_feed.refresh_symbols([settings.benchmark_symbol])
+        cached = price_feed.snapshot()
+    return cached
 
 
-def _build_agent_identity(agent: Agent) -> AgentIdentity:
-    return AgentIdentity(
-        agent_id=agent.id,
-        user_id=agent.user_id,
-        name=agent.name,
-        icon_url=agent.icon_url,
-        starting_cash=float(agent.starting_cash),
-        real_money=agent.real_money,
-        is_paper=agent.is_paper,
-    )
+def _build_execution_summary(agent: Agent, execution: Execution) -> str:
+    action = "bought" if execution.side == ExecutionSide.BUY else "sold"
+    quantity = _format_decimal(Decimal(execution.quantity))
+    price = Decimal(execution.price_per_share).quantize(Decimal("0.01"))
+    return f"{_display_name(agent)} {action} {quantity} {execution.symbol} @ ${price}"
 
 
-def _build_trade_result(trade: Trade) -> TradeResult:
-    return TradeResult(
-        client_order_id=trade.client_order_id,
-        status=trade.status.value,
-        symbol=trade.symbol,
-        side=trade.side.value,
-        quantity=_money(trade.quantity),
-        price_per_share=_money(trade.price_per_share),
-        total=_money(trade.filled_total),
-        rejection_reason=trade.rejection_reason,
-    )
+def _build_execution_metadata(execution: Execution) -> dict[str, str | float]:
+    return {
+        "external_order_id": execution.external_order_id,
+        "symbol": execution.symbol,
+        "side": execution.side.value,
+        "quantity": float(execution.quantity),
+        "price_per_share": float(execution.price_per_share),
+        "gross_notional": float(execution.gross_notional),
+        "fees": float(execution.fees),
+        "realized_pnl": float(execution.realized_pnl),
+        "executed_at": execution.executed_at.isoformat(),
+    }
 
 
 def _build_account_identity(user: User) -> AccountIdentity:
     return AccountIdentity(
         user_id=user.id,
         username=user.username,
-        paper_trading_enabled=_has_paper_credentials(user),
-        live_trading_enabled=_has_live_credentials(user),
         account_api_key_prefix=user.account_api_key_prefix,
     )
 
@@ -325,80 +204,351 @@ def _build_account_agent_summary(agent: Agent) -> AccountAgentSummary:
         icon_url=agent.icon_url,
         starting_cash=float(agent.starting_cash),
         api_key_prefix=agent.api_key_prefix,
-        real_money=agent.real_money,
-        is_paper=agent.is_paper,
+        trading_mode=agent.trading_mode.value,
+        is_active=agent.is_active,
+        deactivated_at=agent.deactivated_at,
         created_at=agent.created_at,
     )
 
 
-def _generate_client_order_id(symbol: str, side: str) -> str:
-    return f"{side}-{symbol.lower()}-{uuid4().hex[:12]}"
+def _build_agent_identity(agent: Agent) -> AgentIdentity:
+    return AgentIdentity(
+        agent_id=agent.id,
+        user_id=agent.user_id,
+        name=agent.name,
+        icon_url=agent.icon_url,
+        starting_cash=float(agent.starting_cash),
+        trading_mode=agent.trading_mode.value,
+        is_active=agent.is_active,
+        deactivated_at=agent.deactivated_at,
+    )
 
 
-async def _validate_broker_credentials(
+def _build_cash_adjustment_item(adjustment: CashAdjustment) -> CashAdjustmentItem:
+    return CashAdjustmentItem(
+        id=adjustment.id,
+        agent_id=adjustment.agent_id,
+        kind=adjustment.kind.value,
+        amount=float(adjustment.amount),
+        signed_amount=float(adjustment.signed_amount),
+        note=adjustment.note,
+        external_id=adjustment.external_id,
+        effective_at=adjustment.effective_at,
+        created_at=adjustment.created_at,
+    )
+
+
+def _build_execution_result(
+    execution: Execution, *, status_value: Literal["recorded", "duplicate"]
+) -> ExecutionResult:
+    return ExecutionResult(
+        external_order_id=execution.external_order_id,
+        status=status_value,
+        execution_id=execution.id,
+        symbol=execution.symbol,
+        side=execution.side.value,
+        quantity=float(execution.quantity),
+        price_per_share=float(execution.price_per_share),
+        gross_notional=float(execution.gross_notional),
+        fees=float(execution.fees),
+        executed_at=execution.executed_at,
+    )
+
+
+def _build_execution_item(execution: Execution) -> ExecutionListItem:
+    return ExecutionListItem(
+        id=execution.id,
+        external_order_id=execution.external_order_id,
+        symbol=execution.symbol,
+        side=execution.side.value,
+        quantity=float(execution.quantity),
+        price_per_share=float(execution.price_per_share),
+        gross_notional=float(execution.gross_notional),
+        fees=float(execution.fees),
+        realized_pnl=float(execution.realized_pnl),
+        executed_at=execution.executed_at,
+        created_at=execution.created_at,
+    )
+
+
+def _build_activity_item(execution: Execution, agent: Agent) -> ActivityItem:
+    return ActivityItem(
+        id=execution.id,
+        agent_id=agent.id,
+        agent_name=_display_name(agent),
+        icon_url=agent.icon_url,
+        event_type="execution",
+        summary=_build_execution_summary(agent, execution),
+        metadata=_build_execution_metadata(execution),
+        created_at=execution.executed_at,
+    )
+
+
+def _build_activity_payload(execution: Execution, agent: Agent) -> ActivityPayload:
+    return ActivityPayload(
+        agent_id=agent.id,
+        agent_name=_display_name(agent),
+        icon_url=agent.icon_url,
+        summary=_build_execution_summary(agent, execution),
+        timestamp=execution.executed_at,
+    )
+
+
+def _create_user_record(*, db: Session, username: str) -> tuple[User, str]:
+    account_api_key = generate_account_api_key()
+    user = User(
+        username=username,
+        account_api_key_hash=hash_api_key(account_api_key),
+        account_api_key_prefix=account_api_key[:10],
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    return user, account_api_key
+
+
+def _create_agent_record(
     *,
-    alpaca_api_key: str,
-    alpaca_secret_key: str,
-    alpaca_base_url: str,
-    label: str = "Alpaca credentials",
-) -> None:
-    if settings.mock_broker_mode:
-        return
-
-    credentials = AlpacaCredentials(
-        api_key=alpaca_api_key,
-        secret_key=alpaca_secret_key,
-        base_url=alpaca_base_url.rstrip("/"),
+    db: Session,
+    user: User,
+    name: str,
+    starting_cash: float,
+    trading_mode: TradingMode,
+    icon_url: str | None,
+) -> tuple[Agent, str]:
+    api_key = generate_agent_api_key()
+    agent = Agent(
+        user_id=user.id,
+        name=name,
+        api_key_hash=hash_api_key(api_key),
+        api_key_prefix=api_key[:10],
+        starting_cash=Decimal(str(starting_cash)),
+        icon_url=icon_url,
+        trading_mode=trading_mode,
     )
+    db.add(agent)
+    db.commit()
+    db.refresh(agent)
+    return agent, api_key
+
+
+def _agent_for_account(db: Session, *, account: User, agent_id: str) -> Agent:
+    agent = db.scalar(
+        select(Agent).where(Agent.user_id == account.id, Agent.id == agent_id)
+    )
+    if agent is None:
+        raise BridgewoodError(
+            status_code=404,
+            detail="Agent not found.",
+            code="AGENT_NOT_FOUND",
+        )
+    return agent
+
+
+async def _build_live_portfolio(
+    request: Request, db: Session, *, agent: Agent
+) -> PortfolioView:
+    prices = await _get_prices_for_agents(request, db, agent_ids=[agent.id])
+    return build_portfolio(
+        db,
+        agent,
+        prices,
+        as_of=request.app.state.price_feed_service.last_updated_at,
+    )
+
+
+def _execution_cursor_filter(cursor: PageCursor):
+    return or_(
+        Execution.executed_at < cursor.executed_at,
+        and_(
+            Execution.executed_at == cursor.executed_at,
+            Execution.created_at < cursor.created_at,
+        ),
+        and_(
+            Execution.executed_at == cursor.executed_at,
+            Execution.created_at == cursor.created_at,
+            Execution.id < cursor.row_id,
+        ),
+    )
+
+
+def _paginate_activity(
+    db: Session, *, limit: int, cursor: str | None = None
+) -> ActivityPage:
+    query = (
+        select(Execution, Agent)
+        .join(Agent, Agent.id == Execution.agent_id)
+        .where(Agent.is_active.is_(True))
+        .order_by(
+            Execution.executed_at.desc(),
+            Execution.created_at.desc(),
+            Execution.id.desc(),
+        )
+    )
+    if cursor:
+        query = query.where(_execution_cursor_filter(decode_cursor(cursor)))
+
+    rows = list(db.execute(query.limit(limit + 1)).all())
+    page_rows = rows[:limit]
+    next_cursor = None
+    if len(rows) > limit and page_rows:
+        execution, _agent = page_rows[-1]
+        next_cursor = encode_cursor(
+            executed_at=execution.executed_at,
+            created_at=execution.created_at,
+            row_id=execution.id,
+        )
+
+    return ActivityPage(
+        items=[
+            _build_activity_item(execution, agent) for execution, agent in page_rows
+        ],
+        next_cursor=next_cursor,
+    )
+
+
+def _paginate_executions(
+    db: Session, *, agent_id: str, limit: int, cursor: str | None = None
+) -> ExecutionPage:
+    query = (
+        select(Execution)
+        .where(Execution.agent_id == agent_id)
+        .order_by(
+            Execution.executed_at.desc(),
+            Execution.created_at.desc(),
+            Execution.id.desc(),
+        )
+    )
+    if cursor:
+        query = query.where(_execution_cursor_filter(decode_cursor(cursor)))
+
+    rows = list(db.scalars(query.limit(limit + 1)).all())
+    page_rows = rows[:limit]
+    next_cursor = None
+    if len(rows) > limit and page_rows:
+        execution = page_rows[-1]
+        next_cursor = encode_cursor(
+            executed_at=execution.executed_at,
+            created_at=execution.created_at,
+            row_id=execution.id,
+        )
+
+    return ExecutionPage(
+        items=[_build_execution_item(execution) for execution in page_rows],
+        next_cursor=next_cursor,
+    )
+
+
+def _merge_snapshot_points(
+    points: list[SnapshotPoint], additions: list[SnapshotPoint]
+) -> list[SnapshotPoint]:
+    merged: dict[tuple[str, datetime], SnapshotPoint] = {
+        (point.agent_id, point.snapshot_at): point for point in points
+    }
+    for point in additions:
+        merged[(point.agent_id, point.snapshot_at)] = point
+    return sorted(merged.values(), key=lambda point: point.snapshot_at)
+
+
+async def _ensure_benchmark_snapshots(
+    request: Request,
+    db: Session,
+    *,
+    range_key: SnapshotRange,
+    snapshots: list[SnapshotPoint],
+    leaderboard: LeaderboardPayload | None = None,
+) -> list[SnapshotPoint]:
+    benchmark_points = [point for point in snapshots if point.is_benchmark]
+    if len(benchmark_points) >= 2:
+        return snapshots
+
+    state = db.get(BenchmarkState, 1)
+    if state is None:
+        return snapshots
+
+    start_at = state.created_at
+    lookback = get_snapshot_lookback(range_key)
+    if lookback is not None and lookback > start_at:
+        start_at = lookback
+    end_at = utc_now()
+
+    additions: list[SnapshotPoint] = [
+        SnapshotPoint(
+            agent_id=_benchmark_id(state.symbol),
+            name=_benchmark_name(state.symbol),
+            total_value=float(state.starting_cash),
+            return_pct=0.0,
+            snapshot_at=start_at,
+            is_benchmark=True,
+        )
+    ]
+
+    bars = []
     try:
-        await gateway.get_account_state(credentials)
-    except Exception as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Unable to validate {label}.",
-        ) from exc
-
-
-def _signup_fallback_credentials(payload: SignupRequest) -> tuple[str, str, str]:
-    if (
-        payload.alpaca_paper_api_key is not None
-        and payload.alpaca_paper_secret_key is not None
-    ):
-        return (
-            payload.alpaca_paper_api_key,
-            payload.alpaca_paper_secret_key,
-            settings.alpaca_paper_trading_url,
+        bars = await request.app.state.price_feed_service.market_data.get_equity_bars(
+            state.symbol,
+            start=start_at,
+            end=end_at,
+            timeframe=_benchmark_timeframe(range_key),
         )
-    assert payload.alpaca_live_api_key is not None
-    assert payload.alpaca_live_secret_key is not None
-    return (
-        payload.alpaca_live_api_key,
-        payload.alpaca_live_secret_key,
-        settings.alpaca_live_trading_url,
-    )
+    except MarketDataError:
+        bars = []
 
+    starting_cash = Decimal(state.starting_cash)
+    starting_price = Decimal(state.starting_price)
+    if starting_price > 0:
+        for bar in bars:
+            total_value = starting_cash * (bar.close / starting_price)
+            return_pct = ((total_value - starting_cash) / starting_cash) * Decimal(
+                "100"
+            )
+            additions.append(
+                SnapshotPoint(
+                    agent_id=_benchmark_id(state.symbol),
+                    name=_benchmark_name(state.symbol),
+                    total_value=float(total_value),
+                    return_pct=float(return_pct),
+                    snapshot_at=bar.timestamp,
+                    is_benchmark=True,
+                )
+            )
 
-async def _validate_signup_credentials(payload: SignupRequest) -> None:
-    if (
-        payload.alpaca_paper_api_key is not None
-        and payload.alpaca_paper_secret_key is not None
-    ):
-        await _validate_broker_credentials(
-            alpaca_api_key=payload.alpaca_paper_api_key,
-            alpaca_secret_key=payload.alpaca_paper_secret_key,
-            alpaca_base_url=settings.alpaca_paper_trading_url,
-            label="paper Alpaca credentials",
+    if leaderboard is not None:
+        benchmark_entry = next(
+            (entry for entry in leaderboard.agents if entry.is_benchmark), None
         )
-    if (
-        payload.alpaca_live_api_key is not None
-        and payload.alpaca_live_secret_key is not None
+        if benchmark_entry is not None:
+            additions.append(
+                SnapshotPoint(
+                    agent_id=benchmark_entry.id,
+                    name=benchmark_entry.name,
+                    total_value=benchmark_entry.total_value,
+                    return_pct=benchmark_entry.return_pct,
+                    snapshot_at=leaderboard.timestamp,
+                    is_benchmark=True,
+                    icon_url=benchmark_entry.icon_url,
+                )
+            )
+    elif (
+        state.symbol in request.app.state.price_feed_service.snapshot()
+        and starting_price > 0
     ):
-        await _validate_broker_credentials(
-            alpaca_api_key=payload.alpaca_live_api_key,
-            alpaca_secret_key=payload.alpaca_live_secret_key,
-            alpaca_base_url=settings.alpaca_live_trading_url,
-            label="live Alpaca credentials",
+        current_price = request.app.state.price_feed_service.snapshot()[state.symbol]
+        total_value = starting_cash * (current_price / starting_price)
+        additions.append(
+            SnapshotPoint(
+                agent_id=_benchmark_id(state.symbol),
+                name=_benchmark_name(state.symbol),
+                total_value=float(total_value),
+                return_pct=float(
+                    ((total_value - starting_cash) / starting_cash) * Decimal("100")
+                ),
+                snapshot_at=request.app.state.price_feed_service.last_updated_at,
+                is_benchmark=True,
+            )
         )
+
+    return _merge_snapshot_points(snapshots, additions)
 
 
 async def _ensure_benchmark_initialized(request: Request, db: Session) -> None:
@@ -407,379 +557,56 @@ async def _ensure_benchmark_initialized(request: Request, db: Session) -> None:
         return
 
     price_feed = request.app.state.price_feed_service
-    symbol = settings.benchmark_symbol
+    if settings.benchmark_symbol not in price_feed.snapshot():
+        await price_feed.refresh_symbols([settings.benchmark_symbol])
+
     prices = price_feed.snapshot()
-    if symbol not in prices:
-        any_user = db.scalar(select(User).order_by(User.created_at.asc()))
-        credentials = (
-            _get_any_user_credentials(any_user) if any_user is not None else None
-        )
-        live_price = await get_live_benchmark_price(symbol, credentials)
-        if live_price is not None:
-            price_feed.prices[symbol] = live_price
-            price_feed.last_updated_at = datetime.utcnow()
-        prices = price_feed.snapshot()
-    if symbol not in prices:
+    if settings.benchmark_symbol not in prices:
         return
 
     db.add(
         BenchmarkState(
             id=1,
-            symbol=symbol,
+            symbol=settings.benchmark_symbol,
             starting_cash=Decimal(str(settings.benchmark_starting_cash)),
-            starting_price=prices[symbol],
+            starting_price=prices[settings.benchmark_symbol],
         )
     )
     db.commit()
 
 
 async def _broadcast_cached_leaderboard(request: Request, db: Session) -> None:
-    payload = build_leaderboard_payload(
+    prices = await _get_prices_for_agents(
+        request,
         db,
-        request.app.state.price_feed_service.snapshot(),
-        timestamp=datetime.utcnow(),
+        agent_ids=_active_agent_ids(db),
+        include_benchmark=True,
     )
+    timestamp = (
+        request.app.state.price_feed_service.last_updated_at if prices else utc_now()
+    )
+    payload = build_leaderboard_payload(db, prices, timestamp=timestamp)
     await request.app.state.connection_manager.broadcast_json(
         payload.model_dump(mode="json")
     )
 
 
-async def _process_trade_submission(
-    payload: TradeSubmissionRequest,
-    request: Request,
-    agent: Agent,
-    db: Session,
-) -> tuple[TradeSubmissionResponse, int]:
-    user = db.get(User, agent.user_id)
-    if user is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Owning user not found."
-        )
-
-    duplicate_results: list[TradeResult] = []
-    result_by_client_id: dict[str, TradeResult] = {}
-    normalized_intents: list[tuple[TradeIntent, str]] = []
-    new_intents: list[tuple[TradeIntent, str]] = []
-    seen_client_ids: set[str] = set()
-    for trade in payload.trades:
-        client_order_id = trade.client_order_id or _generate_client_order_id(
-            trade.symbol, trade.side
-        )
-        if client_order_id in seen_client_ids:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Duplicate client_order_id in request.",
-            )
-        seen_client_ids.add(client_order_id)
-        normalized_intents.append((trade, client_order_id))
-
-        existing = db.scalar(
-            select(Trade).where(Trade.client_order_id == client_order_id)
-        )
-        if existing:
-            result = _build_trade_result(existing)
-            duplicate_results.append(result)
-            result_by_client_id[existing.client_order_id] = result
-        else:
-            new_intents.append((trade, client_order_id))
-
-    if not new_intents and duplicate_results:
-        prices = request.app.state.price_feed_service.snapshot()
-        if not prices:
-            await request.app.state.price_feed_service.refresh_once()
-            prices = request.app.state.price_feed_service.snapshot()
-        portfolio = build_portfolio(db, agent, prices)
-        response = TradeSubmissionResponse(
-            results=duplicate_results, portfolio_after=portfolio
-        )
-        return response, status.HTTP_409_CONFLICT
-
-    credentials = _get_user_credentials_for_mode(user, real_money=agent.real_money)
-    price_feed = request.app.state.price_feed_service
-    latest_prices = price_feed.snapshot()
-
-    for intent, client_order_id in new_intents:
-        symbol = intent.symbol.upper()
-        requested_amount = (
-            Decimal(str(intent.amount_dollars))
-            if intent.amount_dollars is not None
-            else None
-        )
-        if symbol not in latest_prices:
-            fetched = await gateway.get_latest_prices(credentials, [symbol])
-            latest_prices.update(fetched)
-            price_feed.prices.update(fetched)
-        price = latest_prices.get(symbol)
-        if price is None or price <= 0:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Unable to price {symbol}.",
-            )
-
-        amount = requested_amount or Decimal("0")
-        try:
-            if intent.side == "buy":
-                if requested_amount is None:
-                    raise HTTPException(
-                        status_code=status.HTTP_400_BAD_REQUEST,
-                        detail=f"amount_dollars is required for buy trades in {symbol}.",
-                    )
-                amount = requested_amount
-                if (
-                    not settings.mock_broker_mode
-                    and "/" not in symbol
-                    and not is_market_hours()
-                ):
-                    raise HTTPException(
-                        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                        detail="Equity market orders are only accepted during regular market hours.",
-                    )
-                current_cash = Decimal(str(compute_cash(db, agent)))
-                if amount > current_cash:
-                    raise HTTPException(
-                        status_code=status.HTTP_400_BAD_REQUEST,
-                        detail=f"Insufficient virtual cash for {symbol}.",
-                    )
-                account_state = await gateway.get_account_state(credentials)
-                if amount > account_state.buying_power:
-                    raise HTTPException(
-                        status_code=status.HTTP_400_BAD_REQUEST,
-                        detail=f"Actual Alpaca buying power is insufficient for {symbol}.",
-                    )
-                fill = await gateway.submit_order(
-                    credentials,
-                    symbol=symbol,
-                    side="buy",
-                    client_order_id=client_order_id,
-                    notional=amount,
-                )
-            else:
-                if (
-                    not settings.mock_broker_mode
-                    and "/" not in symbol
-                    and not is_market_hours()
-                ):
-                    raise HTTPException(
-                        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                        detail="Equity market orders are only accepted during regular market hours.",
-                    )
-                position = db.get(Position, {"agent_id": agent.id, "symbol": symbol})
-                if position is None:
-                    raise HTTPException(
-                        status_code=status.HTTP_400_BAD_REQUEST,
-                        detail=f"No virtual position in {symbol}.",
-                    )
-                if intent.sell_all:
-                    qty = Decimal(position.quantity)
-                    amount = (qty * price).quantize(Decimal("0.000001"))
-                else:
-                    if requested_amount is None:
-                        raise HTTPException(
-                            status_code=status.HTTP_400_BAD_REQUEST,
-                            detail=f"amount_dollars is required for sell trades in {symbol}.",
-                        )
-                    amount = requested_amount
-                    qty = estimate_sell_quantity(position, amount, price)
-                if qty <= 0:
-                    raise HTTPException(
-                        status_code=status.HTTP_400_BAD_REQUEST,
-                        detail=f"Sell quantity is too small for {symbol}.",
-                    )
-                fill = await gateway.submit_order(
-                    credentials,
-                    symbol=symbol,
-                    side="sell",
-                    client_order_id=client_order_id,
-                    qty=qty,
-                )
-        except HTTPException:
-            raise
-        except BrokerError as exc:
-            rejected_trade = Trade(
-                agent_id=agent.id,
-                symbol=symbol,
-                side=TradeSide(intent.side),
-                amount_dollars=amount,
-                client_order_id=client_order_id,
-                rationale=payload.rationale,
-                status=TradeStatus.REJECTED,
-                rejection_reason=str(exc),
-            )
-            db.add(rejected_trade)
-            db.commit()
-            result_by_client_id[client_order_id] = TradeResult(
-                client_order_id=client_order_id,
-                status="rejected",
-                symbol=symbol,
-                side=intent.side,
-                rejection_reason=str(exc),
-            )
-            continue
-
-        status_value = (
-            TradeStatus.FILLED if fill.status == "filled" else TradeStatus.REJECTED
-        )
-        realized_pnl = Decimal("0")
-        if (
-            fill.status == "filled"
-            and fill.quantity is not None
-            and fill.filled_avg_price is not None
-        ):
-            realized_pnl = apply_fill_to_position(
-                db,
-                agent_id=agent.id,
-                symbol=symbol,
-                side=TradeSide(intent.side),
-                quantity=fill.quantity,
-                price=fill.filled_avg_price,
-            )
-
-        trade = Trade(
-            agent_id=agent.id,
-            symbol=symbol,
-            side=TradeSide(intent.side),
-            amount_dollars=amount,
-            quantity=fill.quantity,
-            price_per_share=fill.filled_avg_price,
-            filled_total=fill.filled_total,
-            realized_pnl=realized_pnl,
-            alpaca_order_id=fill.order_id,
-            client_order_id=client_order_id,
-            rationale=payload.rationale,
-            status=status_value,
-            rejection_reason=fill.rejection_reason,
-            executed_at=fill.filled_at,
-        )
-        db.add(trade)
-        db.commit()
-        result_by_client_id[trade.client_order_id] = _build_trade_result(trade)
-
-    results = [
-        result_by_client_id[client_order_id]
-        for _, client_order_id in normalized_intents
-    ]
-    metadata = {
-        "trade_count": len(results),
-        "results": [result.model_dump(mode="json") for result in results],
-    }
-    summary = payload.rationale or f"Executed {len(results)} trade(s)."
-    activity = ActivityLog(
-        agent_id=agent.id,
-        event_type=ActivityEventType.CYCLE_SUMMARY,
-        summary=summary,
-        metadata_json=metadata,
-        cost_tokens=(
-            Decimal(str(payload.cycle_cost)) if payload.cycle_cost is not None else None
-        ),
-    )
-    db.add(activity)
-    db.commit()
-
-    await _ensure_benchmark_initialized(request, db)
-    await request.app.state.price_feed_service.refresh_once()
-    prices = request.app.state.price_feed_service.snapshot()
-    portfolio = build_portfolio(db, agent, prices)
-
-    activity_payload = ActivityPayload(
-        agent_id=agent.id,
-        agent_name=f"{agent.name}{' *' if agent.is_paper else ''}",
-        icon_url=agent.icon_url,
-        summary=summary,
-        cost_tokens=payload.cycle_cost,
-        timestamp=activity.created_at,
-    )
-    await request.app.state.connection_manager.broadcast_json(
-        activity_payload.model_dump(mode="json")
-    )
-
-    return (
-        TradeSubmissionResponse(results=results, portfolio_after=portfolio),
-        status.HTTP_200_OK,
-    )
+async def _apply_rate_limit(
+    request: Request, *, scope: str, key: str, detail: str
+) -> None:
+    await request.app.state.rate_limiter.check(scope, key, detail=detail)
 
 
 @router.get("/health")
-async def healthcheck() -> dict[str, str]:
-    return {"status": "ok"}
-
-
-@router.post(
-    "/users", response_model=UserCreateResponse, dependencies=[Depends(require_admin)]
-)
-async def create_user(
-    payload: UserCreateRequest, request: Request, db: Session = Depends(get_db)
-) -> UserCreateResponse:
-    if db.scalar(select(User).where(User.username == payload.username)):
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT, detail="Username already exists."
-        )
-
-    await _validate_broker_credentials(
-        alpaca_api_key=payload.alpaca_api_key,
-        alpaca_secret_key=payload.alpaca_secret_key,
-        alpaca_base_url=payload.alpaca_base_url,
-        label="Alpaca credentials",
-    )
-    is_paper_credentials = _legacy_looks_paper(payload.alpaca_base_url)
-    user, account_api_key = _create_user_record(
-        db=db,
-        username=payload.username,
-        alpaca_api_key=payload.alpaca_api_key,
-        alpaca_secret_key=payload.alpaca_secret_key,
-        alpaca_base_url=payload.alpaca_base_url,
-        alpaca_paper_api_key=(payload.alpaca_api_key if is_paper_credentials else None),
-        alpaca_paper_secret_key=(
-            payload.alpaca_secret_key if is_paper_credentials else None
-        ),
-        alpaca_live_api_key=(None if is_paper_credentials else payload.alpaca_api_key),
-        alpaca_live_secret_key=(
-            None if is_paper_credentials else payload.alpaca_secret_key
-        ),
-    )
-
-    await _ensure_benchmark_initialized(request, db)
-    return UserCreateResponse(
-        user_id=user.id,
-        username=user.username,
-        alpaca_base_url=user.alpaca_base_url,
-        is_paper=_is_paper_only_account(user),
-        account_api_key=account_api_key,
-        account_api_key_prefix=user.account_api_key_prefix,
-        paper_trading_enabled=_has_paper_credentials(user),
-        live_trading_enabled=_has_live_credentials(user),
-    )
-
-
-@router.post(
-    "/agents", response_model=AgentCreateResponse, dependencies=[Depends(require_admin)]
-)
-async def create_agent(
-    payload: AgentCreateRequest, db: Session = Depends(get_db)
-) -> AgentCreateResponse:
-    user = db.get(User, payload.user_id)
-    if user is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="User not found."
-        )
-
-    agent, api_key = _create_agent_record(
-        db=db,
-        user=user,
-        name=payload.name,
-        starting_cash=payload.starting_cash,
-        real_money=payload.real_money,
-        icon_url=payload.icon_url,
-    )
-    return AgentCreateResponse(
-        agent_id=agent.id,
-        name=agent.name,
-        api_key=api_key,
-        api_key_prefix=agent.api_key_prefix,
-        starting_cash=float(agent.starting_cash),
-        real_money=agent.real_money,
-        icon_url=agent.icon_url,
-        is_paper=agent.is_paper,
-    )
+async def healthcheck(request: Request) -> dict[str, object]:
+    price_feed_health = request.app.state.price_feed_service.health_summary()
+    snapshot_health = request.app.state.snapshot_worker.health_summary()
+    healthy = bool(price_feed_health["healthy"]) and bool(snapshot_health["healthy"])
+    return {
+        "status": "ok" if healthy else "degraded",
+        "market_data": price_feed_health,
+        "snapshots": snapshot_health,
+    }
 
 
 @router.post(
@@ -790,87 +617,28 @@ async def signup(
     request: Request,
     db: Session = Depends(get_db),
 ) -> SignupResponse:
-    if db.scalar(select(User).where(User.username == payload.username)):
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Username already exists.",
-        )
-
-    await _validate_signup_credentials(payload)
-    (
-        fallback_api_key,
-        fallback_secret_key,
-        fallback_base_url,
-    ) = _signup_fallback_credentials(payload)
-    user, account_api_key = _create_user_record(
-        db=db,
-        username=payload.username,
-        alpaca_api_key=fallback_api_key,
-        alpaca_secret_key=fallback_secret_key,
-        alpaca_base_url=fallback_base_url,
-        alpaca_paper_api_key=payload.alpaca_paper_api_key,
-        alpaca_paper_secret_key=payload.alpaca_paper_secret_key,
-        alpaca_live_api_key=payload.alpaca_live_api_key,
-        alpaca_live_secret_key=payload.alpaca_live_secret_key,
+    client_host = request.client.host if request.client else "unknown"
+    await _apply_rate_limit(
+        request,
+        scope="signup",
+        key=client_host,
+        detail="Too many signup attempts. Please try again soon.",
     )
 
+    if db.scalar(select(User).where(User.username == payload.username)):
+        raise BridgewoodError(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Username already exists.",
+            code="USERNAME_EXISTS",
+        )
+
+    user, account_api_key = _create_user_record(db=db, username=payload.username)
     await _ensure_benchmark_initialized(request, db)
     return SignupResponse(
         user_id=user.id,
         username=user.username,
-        alpaca_base_url=None,
-        is_paper=_is_paper_only_account(user),
         account_api_key=account_api_key,
-        account_api_key_prefix=user.account_api_key_prefix or "",
-        paper_trading_enabled=_has_paper_credentials(user),
-        live_trading_enabled=_has_live_credentials(user),
-    )
-
-
-@router.post("/dev/mock-agent", response_model=MockAgentCreateResponse)
-async def create_mock_agent(
-    payload: MockAgentCreateRequest,
-    request: Request,
-    db: Session = Depends(get_db),
-) -> MockAgentCreateResponse:
-    if not settings.mock_broker_mode:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Mock agent bootstrap is only available when MOCK_BROKER_MODE=true.",
-        )
-
-    username = _next_mock_username(db, payload.username, payload.name)
-    mock_api_key = f"mock-{username}-key"
-    mock_secret_key = f"mock-{username}-secret"
-    user, account_api_key = _create_user_record(
-        db=db,
-        username=username,
-        alpaca_api_key=mock_api_key,
-        alpaca_secret_key=mock_secret_key,
-        alpaca_base_url=settings.alpaca_paper_trading_url,
-        alpaca_paper_api_key=mock_api_key,
-        alpaca_paper_secret_key=mock_secret_key,
-    )
-
-    agent, api_key = _create_agent_record(
-        db=db,
-        user=user,
-        name=payload.name,
-        starting_cash=payload.starting_cash,
-        real_money=False,
-        icon_url=payload.icon_url,
-    )
-
-    await _ensure_benchmark_initialized(request, db)
-    return MockAgentCreateResponse(
-        user_id=user.id,
-        agent_id=agent.id,
-        name=agent.name,
-        api_key=api_key,
-        account_api_key=account_api_key,
-        real_money=agent.real_money,
-        is_paper=agent.is_paper,
-        username=user.username,
+        account_api_key_prefix=user.account_api_key_prefix,
     )
 
 
@@ -914,26 +682,36 @@ async def get_account_agents(
 )
 async def create_account_agent(
     payload: AccountAgentCreateRequest,
+    request: Request,
     account: User = Depends(get_current_account_user),
     db: Session = Depends(get_db),
 ) -> AgentCreateResponse:
+    await _apply_rate_limit(
+        request,
+        scope="agent_create",
+        key=account.id,
+        detail="Too many agent creation requests. Please try again soon.",
+    )
+
     agent, api_key = _create_agent_record(
         db=db,
         user=account,
         name=payload.name,
         starting_cash=payload.starting_cash,
-        real_money=payload.real_money,
+        trading_mode=TradingMode(payload.trading_mode),
         icon_url=payload.icon_url,
     )
+    await _ensure_benchmark_initialized(request, db)
     return AgentCreateResponse(
         agent_id=agent.id,
         name=agent.name,
         api_key=api_key,
         api_key_prefix=agent.api_key_prefix,
         starting_cash=float(agent.starting_cash),
-        real_money=agent.real_money,
+        trading_mode=agent.trading_mode.value,
         icon_url=agent.icon_url,
-        is_paper=agent.is_paper,
+        is_active=agent.is_active,
+        deactivated_at=agent.deactivated_at,
     )
 
 
@@ -945,12 +723,204 @@ async def rename_account_agent(
     account: User = Depends(get_current_account_user),
     db: Session = Depends(get_db),
 ) -> AccountAgentSummary:
-    agent = _agent_for_account(db=db, account=account, agent_id=agent_id)
+    agent = _agent_for_account(db, account=account, agent_id=agent_id)
     agent.name = payload.name
     db.commit()
     db.refresh(agent)
     await _broadcast_cached_leaderboard(request, db)
     return _build_account_agent_summary(agent)
+
+
+@router.get(
+    "/account/agents/{agent_id}/cash-adjustments",
+    response_model=list[CashAdjustmentItem],
+)
+async def get_agent_cash_adjustments(
+    agent_id: str,
+    account: User = Depends(get_current_account_user),
+    db: Session = Depends(get_db),
+) -> list[CashAdjustmentItem]:
+    agent = _agent_for_account(db, account=account, agent_id=agent_id)
+    adjustments = list(
+        db.scalars(
+            select(CashAdjustment)
+            .where(CashAdjustment.agent_id == agent.id)
+            .order_by(
+                CashAdjustment.effective_at.desc(),
+                CashAdjustment.created_at.desc(),
+                CashAdjustment.id.desc(),
+            )
+        ).all()
+    )
+    return [_build_cash_adjustment_item(adjustment) for adjustment in adjustments]
+
+
+@router.post(
+    "/account/agents/{agent_id}/cash-adjustments",
+    response_model=CashAdjustmentCreateResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_agent_cash_adjustment(
+    agent_id: str,
+    payload: CashAdjustmentCreateRequest,
+    request: Request,
+    account: User = Depends(get_current_account_user),
+    db: Session = Depends(get_db),
+) -> CashAdjustmentCreateResponse:
+    agent = _agent_for_account(db, account=account, agent_id=agent_id)
+
+    if payload.external_id:
+        existing = db.scalar(
+            select(CashAdjustment).where(
+                CashAdjustment.agent_id == agent.id,
+                CashAdjustment.external_id == payload.external_id,
+            )
+        )
+        if existing is not None:
+            portfolio = await _build_live_portfolio(request, db, agent=agent)
+            return CashAdjustmentCreateResponse(
+                status="duplicate",
+                adjustment=_build_cash_adjustment_item(existing),
+                portfolio_after=portfolio,
+            )
+
+    effective_at = payload.effective_at or utc_now()
+    if effective_at < agent.created_at:
+        raise BridgewoodError(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="effective_at cannot be earlier than the agent creation time.",
+            code="INVALID_EFFECTIVE_AT",
+        )
+
+    kind = CashAdjustmentKind(payload.kind)
+    amount = money(Decimal(str(payload.amount)))
+    signed_amount = signed_cash_adjustment_amount(kind, amount)
+    capital_after_adjustment = (
+        Decimal(agent.starting_cash)
+        + cash_adjustment_total(db, agent.id, end_at=effective_at)
+        + signed_amount
+    )
+    if capital_after_adjustment <= 0:
+        raise BridgewoodError(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cash adjustment would reduce contributed capital to zero or below.",
+            code="INVALID_CASH_ADJUSTMENT",
+        )
+
+    adjustment = CashAdjustment(
+        agent_id=agent.id,
+        kind=kind,
+        amount=amount,
+        note=payload.note,
+        external_id=payload.external_id,
+        effective_at=effective_at,
+    )
+    db.add(adjustment)
+    db.commit()
+    db.refresh(adjustment)
+
+    portfolio = await _build_live_portfolio(request, db, agent=agent)
+    await _broadcast_cached_leaderboard(request, db)
+    return CashAdjustmentCreateResponse(
+        status="recorded",
+        adjustment=_build_cash_adjustment_item(adjustment),
+        portfolio_after=portfolio,
+    )
+
+
+@router.post(
+    "/account/agents/{agent_id}/rotate-key",
+    response_model=AgentKeyRotationResponse,
+)
+async def rotate_agent_key(
+    agent_id: str,
+    account: User = Depends(get_current_account_user),
+    db: Session = Depends(get_db),
+) -> AgentKeyRotationResponse:
+    agent = _agent_for_account(db, account=account, agent_id=agent_id)
+    api_key = generate_agent_api_key()
+    rotated_at = utc_now()
+
+    agent.api_key_hash = hash_api_key(api_key)
+    agent.api_key_prefix = api_key[:10]
+    db.commit()
+    db.refresh(agent)
+
+    return AgentKeyRotationResponse(
+        agent_id=agent.id,
+        name=agent.name,
+        api_key=api_key,
+        api_key_prefix=agent.api_key_prefix,
+        rotated_at=rotated_at,
+    )
+
+
+@router.post(
+    "/account/agents/{agent_id}/reset",
+    response_model=AgentResetResponse,
+)
+async def reset_agent(
+    agent_id: str,
+    request: Request,
+    account: User = Depends(get_current_account_user),
+    db: Session = Depends(get_db),
+) -> AgentResetResponse:
+    agent = _agent_for_account(db, account=account, agent_id=agent_id)
+    deleted_cash_adjustments = (
+        db.execute(
+            delete(CashAdjustment).where(CashAdjustment.agent_id == agent.id)
+        ).rowcount
+        or 0
+    )
+    deleted_executions = (
+        db.execute(delete(Execution).where(Execution.agent_id == agent.id)).rowcount
+        or 0
+    )
+    deleted_positions = (
+        db.execute(delete(Position).where(Position.agent_id == agent.id)).rowcount or 0
+    )
+    deleted_snapshots = (
+        db.execute(
+            delete(PortfolioSnapshot).where(PortfolioSnapshot.agent_id == agent.id)
+        ).rowcount
+        or 0
+    )
+    db.commit()
+
+    await _broadcast_cached_leaderboard(request, db)
+    return AgentResetResponse(
+        agent_id=agent.id,
+        reset_at=utc_now(),
+        deleted_executions=deleted_executions,
+        deleted_positions=deleted_positions,
+        deleted_snapshots=deleted_snapshots,
+        deleted_cash_adjustments=deleted_cash_adjustments,
+    )
+
+
+@router.post(
+    "/account/agents/{agent_id}/deactivate",
+    response_model=AgentDeactivationResponse,
+)
+async def deactivate_agent(
+    agent_id: str,
+    request: Request,
+    account: User = Depends(get_current_account_user),
+    db: Session = Depends(get_db),
+) -> AgentDeactivationResponse:
+    agent = _agent_for_account(db, account=account, agent_id=agent_id)
+    if agent.is_active:
+        agent.is_active = False
+        agent.deactivated_at = utc_now()
+        db.commit()
+        db.refresh(agent)
+        await _broadcast_cached_leaderboard(request, db)
+
+    return AgentDeactivationResponse(
+        agent_id=agent.id,
+        is_active=agent.is_active,
+        deactivated_at=agent.deactivated_at,
+    )
 
 
 @router.get("/me", response_model=AgentIdentity)
@@ -964,11 +934,19 @@ async def get_portfolio(
     agent: Agent = Depends(get_current_agent),
     db: Session = Depends(get_db),
 ) -> PortfolioView:
-    prices = request.app.state.price_feed_service.snapshot()
-    if not prices:
-        await request.app.state.price_feed_service.refresh_once()
-        prices = request.app.state.price_feed_service.snapshot()
-    return build_portfolio(db, agent, prices)
+    return await _build_live_portfolio(request, db, agent=agent)
+
+
+@router.get("/executions", response_model=ExecutionPage)
+async def get_executions(
+    limit: int = Query(
+        default=settings.execution_page_size, ge=1, le=settings.max_page_size
+    ),
+    cursor: str | None = Query(default=None),
+    agent: Agent = Depends(get_current_agent),
+    db: Session = Depends(get_db),
+) -> ExecutionPage:
+    return _paginate_executions(db, agent_id=agent.id, limit=limit, cursor=cursor)
 
 
 @router.get("/prices", response_model=PricesResponse)
@@ -976,8 +954,9 @@ async def get_prices(
     request: Request,
     symbols: str = Query(...),
     agent: Agent = Depends(get_current_agent),
-    db: Session = Depends(get_db),
 ) -> PricesResponse:
+    del agent
+
     symbol_list = [
         symbol.strip().upper() for symbol in symbols.split(",") if symbol.strip()
     ]
@@ -985,19 +964,8 @@ async def get_prices(
     cached = price_feed.snapshot()
     missing = [symbol for symbol in symbol_list if symbol not in cached]
     if missing:
-        user = db.get(User, agent.user_id)
-        if user is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Owning user not found.",
-            )
-        latest = await gateway.get_latest_prices(
-            _get_user_credentials_for_mode(user, real_money=agent.real_money),
-            missing,
-        )
+        latest = await price_feed.refresh_symbols(missing)
         cached.update(latest)
-        price_feed.prices.update(latest)
-        price_feed.last_updated_at = datetime.utcnow()
     return PricesResponse(
         prices={
             symbol: float(cached[symbol]) for symbol in symbol_list if symbol in cached
@@ -1006,54 +974,119 @@ async def get_prices(
     )
 
 
-@router.post("/trade", response_model=TradeExecutionResponse)
-async def submit_trade(
-    payload: TradeExecutionRequest,
+@router.post("/executions", response_model=ExecutionReportResponse)
+async def report_executions(
+    payload: ExecutionReportRequest,
     request: Request,
     agent: Agent = Depends(get_current_agent),
     db: Session = Depends(get_db),
-) -> TradeExecutionResponse:
-    batch_payload = TradeSubmissionRequest(
-        trades=[
-            TradeIntent(
-                symbol=payload.symbol,
-                side=payload.side,
-                amount_dollars=payload.amount_dollars,
-                client_order_id=payload.client_order_id,
-                sell_all=payload.sell_all,
+) -> ExecutionReportResponse:
+    await _apply_rate_limit(
+        request,
+        scope="execution_report",
+        key=agent.id,
+        detail="Too many execution reports. Please try again soon.",
+    )
+
+    seen_external_ids: set[str] = set()
+    result_by_external_id: dict[str, ExecutionResult] = {}
+
+    for execution in payload.executions:
+        if execution.external_order_id in seen_external_ids:
+            raise BridgewoodError(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Duplicate external_order_id in request.",
+                code="DUPLICATE_EXTERNAL_ORDER_ID",
             )
-        ],
-        rationale=payload.rationale,
-        cycle_cost=payload.cycle_cost,
-    )
-    response, status_code = await _process_trade_submission(
-        batch_payload, request, agent, db
-    )
-    single_response = TradeExecutionResponse(
-        result=response.results[0], portfolio_after=response.portfolio_after
-    )
-    if status_code != status.HTTP_200_OK:
-        return JSONResponse(
-            status_code=status_code,
-            content=single_response.model_dump(mode="json"),
-        )
-    return single_response
+        seen_external_ids.add(execution.external_order_id)
 
-
-@router.post("/trades", response_model=TradeSubmissionResponse)
-async def submit_trades(
-    payload: TradeSubmissionRequest,
-    request: Request,
-    agent: Agent = Depends(get_current_agent),
-    db: Session = Depends(get_db),
-) -> TradeSubmissionResponse:
-    response, status_code = await _process_trade_submission(payload, request, agent, db)
-    if status_code != status.HTTP_200_OK:
-        return JSONResponse(
-            status_code=status_code,
-            content=response.model_dump(mode="json"),
+    external_ids = [execution.external_order_id for execution in payload.executions]
+    existing_models = list(
+        db.scalars(
+            select(Execution).where(
+                Execution.agent_id == agent.id,
+                Execution.external_order_id.in_(external_ids),
+            )
         )
-    return response
+    )
+    existing_by_external_id = {
+        execution.external_order_id: execution for execution in existing_models
+    }
+
+    new_executions = []
+    for execution in payload.executions:
+        existing = existing_by_external_id.get(execution.external_order_id)
+        if existing is not None:
+            result_by_external_id[execution.external_order_id] = (
+                _build_execution_result(existing, status_value="duplicate")
+            )
+            continue
+        new_executions.append(execution)
+
+    recorded_models: list[Execution] = []
+    new_executions.sort(key=lambda item: item.executed_at)
+
+    try:
+        for execution in new_executions:
+            quantity = quantity_value(Decimal(str(execution.quantity)))
+            price = price_value(Decimal(str(execution.price)))
+            fees = notional(Decimal(str(execution.fees)))
+            side = ExecutionSide(execution.side)
+
+            execution_model = Execution(
+                agent_id=agent.id,
+                external_order_id=execution.external_order_id,
+                symbol=execution.symbol,
+                side=side,
+                quantity=quantity,
+                price_per_share=price,
+                gross_notional=gross_notional(quantity, price),
+                fees=fees,
+                realized_pnl=apply_execution_to_position(
+                    db,
+                    agent_id=agent.id,
+                    symbol=execution.symbol,
+                    side=side,
+                    quantity=quantity,
+                    price=price,
+                    fees=fees,
+                ),
+                executed_at=execution.executed_at,
+            )
+            db.add(execution_model)
+            db.flush()
+            recorded_models.append(execution_model)
+            result_by_external_id[execution.external_order_id] = (
+                _build_execution_result(execution_model, status_value="recorded")
+            )
+
+        db.commit()
+    except BridgewoodError:
+        db.rollback()
+        raise
+    except Exception:
+        db.rollback()
+        raise
+
+    prices = await _get_prices_for_agents(request, db, agent_ids=[agent.id])
+    portfolio = build_portfolio(
+        db,
+        agent,
+        prices,
+        as_of=request.app.state.price_feed_service.last_updated_at,
+    )
+
+    for execution in recorded_models:
+        activity_payload = _build_activity_payload(execution, agent)
+        await request.app.state.connection_manager.broadcast_json(
+            activity_payload.model_dump(mode="json")
+        )
+
+    ordered_results = [
+        result_by_external_id[execution.external_order_id]
+        for execution in payload.executions
+    ]
+    return ExecutionReportResponse(results=ordered_results, portfolio_after=portfolio)
 
 
 @router.get("/leaderboard", response_model=LeaderboardPayload)
@@ -1061,44 +1094,46 @@ async def get_leaderboard(
     request: Request, db: Session = Depends(get_db)
 ) -> LeaderboardPayload:
     await _ensure_benchmark_initialized(request, db)
-    if not request.app.state.price_feed_service.snapshot():
-        await request.app.state.price_feed_service.refresh_once()
-    return build_leaderboard_payload(
-        db, request.app.state.price_feed_service.snapshot()
+    prices = await _get_prices_for_agents(
+        request,
+        db,
+        agent_ids=_active_agent_ids(db),
+        include_benchmark=True,
     )
+    return build_leaderboard_payload(db, prices)
 
 
-@router.get("/activity", response_model=list[ActivityItem])
-async def get_activity(db: Session = Depends(get_db)) -> list[ActivityItem]:
-    logs = list(
-        db.execute(
-            select(ActivityLog, Agent)
-            .join(Agent, Agent.id == ActivityLog.agent_id)
-            .order_by(ActivityLog.created_at.desc())
-            .limit(settings.activity_page_size)
-        ).all()
-    )
-    return [
-        ActivityItem(
-            id=log.id,
-            agent_id=log.agent_id,
-            agent_name=f"{agent.name}{' *' if agent.is_paper else ''}",
-            icon_url=agent.icon_url,
-            event_type=log.event_type.value,
-            summary=log.summary,
-            metadata=log.metadata_json,
-            cost_tokens=float(log.cost_tokens) if log.cost_tokens is not None else None,
-            created_at=log.created_at,
-        )
-        for log, agent in logs
-    ]
+@router.get("/activity", response_model=ActivityPage)
+async def get_activity(
+    limit: int = Query(
+        default=settings.activity_page_size, ge=1, le=settings.max_page_size
+    ),
+    cursor: str | None = Query(default=None),
+    db: Session = Depends(get_db),
+) -> ActivityPage:
+    return _paginate_activity(db, limit=limit, cursor=cursor)
 
 
-@router.get("/snapshots")
+@router.get("/snapshots", response_model=list[SnapshotPoint])
 async def get_snapshots(
-    range: SnapshotRange = Query(default="1D"), db: Session = Depends(get_db)
-):
-    return build_snapshot_series(db, range)
+    request: Request,
+    range: SnapshotRange = Query(default="1D"),
+    db: Session = Depends(get_db),
+) -> list[SnapshotPoint]:
+    await _ensure_benchmark_initialized(request, db)
+    await _get_prices_for_agents(
+        request,
+        db,
+        agent_ids=[],
+        include_benchmark=True,
+    )
+    snapshots = build_snapshot_series(db, range)
+    return await _ensure_benchmark_snapshots(
+        request,
+        db,
+        range_key=range,
+        snapshots=snapshots,
+    )
 
 
 @router.get("/dashboard", response_model=DashboardBootstrap)
@@ -1108,13 +1143,22 @@ async def get_dashboard(
     db: Session = Depends(get_db),
 ) -> DashboardBootstrap:
     await _ensure_benchmark_initialized(request, db)
-    if not request.app.state.price_feed_service.snapshot():
-        await request.app.state.price_feed_service.refresh_once()
-    leaderboard = build_leaderboard_payload(
-        db, request.app.state.price_feed_service.snapshot()
+    prices = await _get_prices_for_agents(
+        request,
+        db,
+        agent_ids=_active_agent_ids(db),
+        include_benchmark=True,
     )
-    activity = await get_activity(db)
+    leaderboard = build_leaderboard_payload(db, prices)
+    activity = _paginate_activity(db, limit=settings.activity_page_size).items
     snapshots = build_snapshot_series(db, range)
+    snapshots = await _ensure_benchmark_snapshots(
+        request,
+        db,
+        range_key=range,
+        snapshots=snapshots,
+        leaderboard=leaderboard,
+    )
     return DashboardBootstrap(
         leaderboard=leaderboard, activity=activity, snapshots=snapshots, range=range
     )
