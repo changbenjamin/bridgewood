@@ -43,6 +43,10 @@ export function LiveActivityFeed({ items }: Props) {
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
 
+  function handleCloseAll() {
+    setShowAll(false);
+  }
+
   const previewItems =
     items.length > PREVIEW_LIMIT ? items.slice(0, PREVIEW_LIMIT) : items;
   const displayItems = showAll ? recentItems : previewItems;
@@ -144,12 +148,16 @@ export function LiveActivityFeed({ items }: Props) {
       </section>
 
       {showAll && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-stone-950/40 px-4">
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-stone-950/40 px-4"
+          onClick={handleCloseAll}
+        >
           <div
             role="dialog"
             aria-modal="true"
             aria-labelledby="recent-trades-title"
             className="max-h-[80vh] w-full max-w-3xl overflow-hidden border border-stone-300 bg-[#fbf9f3] shadow-[0_24px_80px_rgba(28,25,23,0.22)]"
+            onClick={(event) => event.stopPropagation()}
           >
             <div className="flex items-center justify-between border-b border-stone-200 px-5 py-4 md:px-6">
               <div>
@@ -166,7 +174,7 @@ export function LiveActivityFeed({ items }: Props) {
 
               <button
                 type="button"
-                onClick={() => setShowAll(false)}
+                onClick={handleCloseAll}
                 className="border border-stone-300 bg-white px-3 py-1.5 text-[12px] font-semibold uppercase tracking-[0.18em] text-stone-700 transition hover:bg-[#f8f5ee]"
               >
                 Close
