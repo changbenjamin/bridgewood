@@ -82,6 +82,7 @@ from app.services.portfolio_engine import (
     quantity_value,
     signed_cash_adjustment_amount,
 )
+from app.services.snapshot_store import store_portfolio_snapshot
 from app.services.security import (
     generate_account_api_key,
     generate_agent_api_key,
@@ -354,6 +355,27 @@ async def _build_live_portfolio(
         agent,
         prices,
         as_of=request.app.state.price_feed_service.last_updated_at,
+    )
+
+
+def _snapshot_timestamp(request: Request, *, has_prices: bool) -> datetime:
+    if has_prices:
+        return request.app.state.price_feed_service.last_updated_at
+    return utc_now()
+
+
+def _store_live_portfolio_snapshot(
+    db: Session,
+    *,
+    agent: Agent,
+    portfolio: PortfolioView,
+    snapshot_at: datetime,
+) -> None:
+    store_portfolio_snapshot(
+        db,
+        agent_id=agent.id,
+        portfolio=portfolio,
+        snapshot_at=snapshot_at,
     )
 
 
@@ -841,6 +863,16 @@ async def create_agent_cash_adjustment(
     db.refresh(adjustment)
 
     portfolio = await _build_live_portfolio(request, db, agent=agent)
+    snapshot_at = _snapshot_timestamp(
+        request, has_prices=bool(request.app.state.price_feed_service.snapshot())
+    )
+    _store_live_portfolio_snapshot(
+        db,
+        agent=agent,
+        portfolio=portfolio,
+        snapshot_at=snapshot_at,
+    )
+    db.commit()
     await _broadcast_cached_leaderboard(request, db)
     return CashAdjustmentCreateResponse(
         status="recorded",
@@ -1090,12 +1122,22 @@ async def report_executions(
         raise
 
     prices = await _get_prices_for_agents(request, db, agent_ids=[agent.id])
+    snapshot_at = _snapshot_timestamp(request, has_prices=bool(prices))
     portfolio = build_portfolio(
         db,
         agent,
         prices,
-        as_of=request.app.state.price_feed_service.last_updated_at,
+        as_of=snapshot_at,
     )
+    _store_live_portfolio_snapshot(
+        db,
+        agent=agent,
+        portfolio=portfolio,
+        snapshot_at=snapshot_at,
+    )
+    db.commit()
+
+    await _broadcast_cached_leaderboard(request, db)
 
     for execution in recorded_models:
         activity_payload = _build_activity_payload(execution, agent)

@@ -143,6 +143,13 @@ class Position(Base):
 
 class PortfolioSnapshot(Base):
     __tablename__ = "portfolio_snapshots"
+    __table_args__ = (
+        UniqueConstraint(
+            "agent_id",
+            "snapshot_at",
+            name="uq_portfolio_snapshots_agent_snapshot_at",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     agent_id: Mapped[str] = mapped_column(
@@ -208,6 +215,13 @@ class BenchmarkState(Base):
 
 class BenchmarkSnapshot(Base):
     __tablename__ = "benchmark_snapshots"
+    __table_args__ = (
+        UniqueConstraint(
+            "symbol",
+            "snapshot_at",
+            name="uq_benchmark_snapshots_symbol_snapshot_at",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     symbol: Mapped[str] = mapped_column(String(32), nullable=False)

@@ -9,13 +9,12 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import select
 
 from app.core.time import utc_now
-from app.models.entities import (
-    Agent,
-    BenchmarkSnapshot,
-    BenchmarkState,
-    PortfolioSnapshot,
-)
+from app.models.entities import Agent, BenchmarkState
 from app.services.portfolio_engine import build_portfolio
+from app.services.snapshot_store import (
+    store_benchmark_snapshot,
+    store_portfolio_snapshot,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -96,15 +95,11 @@ class SnapshotWorker:
                 .order_by(Agent.created_at.asc())
             ).all():
                 portfolio = build_portfolio(db, agent, prices, as_of=slot)
-                db.add(
-                    PortfolioSnapshot(
-                        agent_id=agent.id,
-                        total_value=Decimal(str(portfolio.total_value)),
-                        cash=Decimal(str(portfolio.cash)),
-                        pnl=Decimal(str(portfolio.pnl)),
-                        return_pct=Decimal(str(portfolio.return_pct)),
-                        snapshot_at=slot,
-                    )
+                store_portfolio_snapshot(
+                    db,
+                    agent_id=agent.id,
+                    portfolio=portfolio,
+                    snapshot_at=slot,
                 )
                 captured = True
 
@@ -119,13 +114,12 @@ class SnapshotWorker:
                     (total_value - Decimal(benchmark_state.starting_cash))
                     / Decimal(benchmark_state.starting_cash)
                 ) * Decimal("100")
-                db.add(
-                    BenchmarkSnapshot(
-                        symbol=benchmark_state.symbol,
-                        total_value=total_value,
-                        return_pct=return_pct,
-                        snapshot_at=slot,
-                    )
+                store_benchmark_snapshot(
+                    db,
+                    symbol=benchmark_state.symbol,
+                    total_value=total_value,
+                    return_pct=return_pct,
+                    snapshot_at=slot,
                 )
                 captured = True
 
