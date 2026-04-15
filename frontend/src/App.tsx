@@ -86,9 +86,9 @@ function App() {
           </div>
         )}
 
-        <section className="mt-3 bg-[#fbf9f3]">
-          <div className="grid xl:grid-cols-[minmax(0,1.75fr)_430px]">
-            <div className="border-b border-stone-300/80 xl:border-r xl:border-b-0">
+        <section className="mt-3">
+          <div className="grid items-start xl:grid-cols-[minmax(0,1.75fr)_430px]">
+            <div className="border border-stone-200 bg-white shadow-[0_18px_45px_rgba(28,25,23,0.08)]">
               <div className="flex flex-col gap-4 px-5 py-5 md:px-6 lg:flex-row lg:items-center lg:justify-between">
                 <div>
                   <h2 className="text-[25px] font-semibold tracking-[-0.03em] text-stone-950">
@@ -128,7 +128,7 @@ function App() {
           </div>
         </section>
 
-        <section className="border-t border-stone-300/80 bg-[#fbf9f3]">
+        <section className="mt-3">
           {isLoading && !leaderboard ? (
             <div className="px-6 py-10 text-sm uppercase tracking-[0.2em] text-stone-500">
               Loading the board...

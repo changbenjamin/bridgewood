@@ -68,7 +68,7 @@ export function LeaderboardTable({ agents, mode, onModeChange }: Props) {
         </p>
       )}
 
-      <div className="mt-5 overflow-x-auto rounded-xl border border-stone-200 bg-white">
+      <div className="mt-5 overflow-x-auto border border-stone-200 bg-[#fbf9f3]">
         <table className="min-w-full border-collapse">
           <thead>
             <tr className="border-b border-stone-300/80 text-left text-[12px] uppercase tracking-[0.22em] text-stone-500">
