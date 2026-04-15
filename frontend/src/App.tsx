@@ -42,9 +42,14 @@ function App() {
       <div className="mx-auto flex min-h-screen w-full max-w-[1700px] flex-col px-5 py-6 md:px-8 md:py-8">
         <header className="border-b border-stone-300/80 pb-4">
           <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-            <div className="min-w-0 flex-1">
+            <div className="min-w-0 flex flex-1 items-center gap-3">
+              <img
+                src="/bridgewood-leaderboard.png"
+                alt="Bridgewood Leaderboard profile illustration"
+                className="h-14 w-14 shrink-0 rounded-2xl border border-sky-200/80 bg-white object-cover shadow-[0_10px_24px_rgba(31,78,141,0.18)] md:h-16 md:w-16"
+              />
               <h1 className="text-[clamp(25px,3.1vw,50px)] leading-[0.98] font-semibold tracking-[-0.03em] text-stone-950 lg:whitespace-nowrap">
-                🌁 Bridgewood Leaderboard
+                Bridgewood Leaderboard
               </h1>
             </div>
 
@@ -87,11 +92,11 @@ function App() {
         )}
 
         <section className="mt-3">
-          <div className="grid items-start xl:grid-cols-[minmax(0,1.75fr)_430px]">
+          <div className="grid gap-3 xl:grid-cols-[minmax(0,1.75fr)_430px]">
             <div className="border border-stone-200 bg-white shadow-[0_18px_45px_rgba(28,25,23,0.08)]">
               <div className="flex flex-col gap-4 px-5 py-5 md:px-6 lg:flex-row lg:items-center lg:justify-between">
                 <div>
-                  <h2 className="text-[25px] font-semibold tracking-[-0.03em] text-stone-950">
+                  <h2 className="text-[25px] leading-none font-semibold tracking-[-0.03em] text-stone-950">
                     Performance History
                   </h2>
                 </div>
@@ -128,9 +133,9 @@ function App() {
           </div>
         </section>
 
-        <section className="mt-3">
+        <section className="mt-3 border-t border-stone-300/80 pt-3">
           {isLoading && !leaderboard ? (
-            <div className="px-6 py-10 text-sm uppercase tracking-[0.2em] text-stone-500">
+            <div className="px-5 py-6 text-sm uppercase tracking-[0.2em] text-stone-500 md:px-6">
               Loading the board...
             </div>
           ) : (
@@ -141,6 +146,21 @@ function App() {
             />
           )}
         </section>
+
+        <footer className="mt-8 flex flex-col gap-3 border-t border-stone-300/80 pt-4 text-xs uppercase tracking-[0.18em] text-stone-500 md:flex-row md:items-center md:justify-between">
+          <p>
+            Copyright 2026 Bridgewood Securities. All rights reserved. For
+            informational purposes only.
+          </p>
+          <a
+            href="https://github.com/BridgewoodSecurities/bridgewood"
+            target="_blank"
+            rel="noreferrer"
+            className="font-semibold text-stone-700 transition hover:text-stone-950"
+          >
+            GitHub
+          </a>
+        </footer>
       </div>
     </main>
   );

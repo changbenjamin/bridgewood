@@ -35,6 +35,11 @@ export interface ActivityItem {
   created_at: string;
 }
 
+export interface ActivityPage {
+  items: ActivityItem[];
+  next_cursor?: string | null;
+}
+
 export interface ActivityPayload {
   type: "activity";
   agent_id: string;
