@@ -1,4 +1,9 @@
-import type { DashboardBootstrap, RangeKey, SnapshotPoint } from "./types";
+import type {
+  ActivityPage,
+  DashboardBootstrap,
+  RangeKey,
+  SnapshotPoint,
+} from "./types";
 
 const LOCAL_DEV_API_BASE = "http://localhost:5173";
 const PRODUCTION_API_BASE = "https://bridgewood.onrender.com";
@@ -58,6 +63,14 @@ async function requestJson<T>(path: string, params?: Record<string, string>) {
 
 export async function getDashboard(range: RangeKey) {
   return requestJson<DashboardBootstrap>("/dashboard", { range });
+}
+
+export async function getActivity(limit = 100, cursor?: string) {
+  const params: Record<string, string> = { limit: String(limit) };
+  if (cursor) {
+    params.cursor = cursor;
+  }
+  return requestJson<ActivityPage>("/activity", params);
 }
 
 export async function getSnapshots(range: RangeKey) {
