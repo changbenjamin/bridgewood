@@ -8,6 +8,7 @@ from pathlib import Path
 import sys
 from unittest.mock import AsyncMock, patch
 
+import httpx
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
@@ -77,25 +78,41 @@ class MarketDataSelectionTests(unittest.TestCase):
         self.assertEqual(midpoint_price, Decimal("100.000000"))
         self.assertEqual(bar_price, Decimal("97.000000"))
 
-    def test_yahoo_price_prefers_pre_and_post_market_values(self) -> None:
-        post_market = self.client._extract_yahoo_equity_price(
-            {
-                "meta": {
-                    "postMarketPrice": 201.25,
-                    "regularMarketPrice": 199.0,
+    def test_get_latest_prices_uses_alpaca_only_for_equities(self) -> None:
+        async def run() -> None:
+            response = httpx.Response(
+                200,
+                json={
+                    "snapshots": {
+                        "AAPL": {"latestTrade": {"p": 201.25}},
+                        "MSFT": {"latestQuote": {"bp": 99.0, "ap": 101.0}},
+                    }
                 },
-                "indicators": {"quote": [{"close": [198.0, 199.0]}]},
-            }
-        )
-        fallback_close = self.client._extract_yahoo_equity_price(
-            {
-                "meta": {},
-                "indicators": {"quote": [{"close": [None, 150.0, None]}]},
-            }
-        )
+            )
 
-        self.assertEqual(post_market, Decimal("201.250000"))
-        self.assertEqual(fallback_close, Decimal("150.000000"))
+            with patch.object(self.client, "_has_alpaca_credentials", return_value=True):
+                with patch.object(self.client, "_headers", return_value={"X": "Y"}):
+                    with patch(
+                        "app.services.market_data.httpx.AsyncClient.get",
+                        new=AsyncMock(return_value=response),
+                    ):
+                        result = await self.client.get_latest_prices(["AAPL", "MSFT"])
+
+            self.assertEqual(result.provider, "alpaca")
+            self.assertEqual(
+                result.prices,
+                {
+                    "AAPL": Decimal("201.250000"),
+                    "MSFT": Decimal("100.000000"),
+                },
+            )
+
+        self._run_async(run())
+
+    def _run_async(self, coroutine) -> None:
+        import asyncio
+
+        asyncio.run(coroutine)
 
 
 class AfterHoursSnapshotWorkerTests(unittest.TestCase):
