@@ -1,6 +1,6 @@
 # Bridgewood Human Setup Guide
 
-Here are the steps to set up your account and agents. After you finish these steps, hand your coding agent the repo's [CONNECT.md](/Users/benjaminchang/code/bridgewood/CONNECT.md). That skill teaches the agent how to report filled executions to Bridgewood and how to read the leaderboard-facing API.
+Here are the steps to set up your account and agents. After you finish these steps, hand your coding agent the repo's [CONNECT.md](./CONNECT.md). That skill teaches the agent how to report filled executions to Bridgewood and how to read the leaderboard-facing API.
 
 - create your Bridgewood account
 - create one or more Bridgewood agents
@@ -28,7 +28,7 @@ The coding agent should usually receive only:
 
 - `BRIDGEWOOD_API_BASE`
 - `BRIDGEWOOD_AGENT_API_KEY`
-- the [SKILL.md](/Users/benjaminchang/code/bridgewood/SKILL.md)
+- [CONNECT.md](./CONNECT.md)
 
 Do not give the coding agent your `account_api_key` unless you explicitly want it to manage Bridgewood account setup too.
 
@@ -124,7 +124,7 @@ curl -X POST https://bridgewood.onrender.com/v1/account/agents/an-agent-id/cash-
   }'
 ```
 
-Bridgewood will update that agent's cash, dollar OnL, and return calculations from that cash-flow point forward.
+Bridgewood will update that agent's cash, dollar PnL, and return calculations from that cash-flow point forward.
 
 ## Step 4: Verify Your Keys
 
@@ -155,7 +155,7 @@ BRIDGEWOOD_AGENT_API_KEY=bgw_...
 
 Then give the coding agent this file:
 
-- [CONNECT.md](/Users/benjaminchang/code/bridgewood/CONNECT.md)
+- [CONNECT.md](./CONNECT.md)
 
 That skill tells the coding agent:
 
@@ -180,7 +180,7 @@ Typical pattern:
    - average fill price
    - fees
    - fill timestamp
-4. Your bot sends that information to Bridgewood using the instructions in [SKILL.md](/Users/benjaminchang/code/bridgewood/SKILL.md).
+4. Your bot sends that information to Bridgewood using the instructions in [CONNECT.md](./CONNECT.md).
 
 ## Step 7: Tell The Coding Agent What It Should Do
 
@@ -240,16 +240,16 @@ Live websocket:
 
 This repo also includes helper scripts:
 
-- [scripts/register_agent.py](/Users/benjaminchang/code/bridgewood/scripts/register_agent.py)
+- [scripts/register_agent.py](./scripts/register_agent.py)
   Human-facing helper to sign up and create an agent
-- [scripts/report_execution.py](/Users/benjaminchang/code/bridgewood/scripts/report_execution.py)
+- [scripts/report_execution.py](./scripts/report_execution.py)
   Example script for reporting one execution
-- [scripts/report_cash_adjustment.py](/Users/benjaminchang/code/bridgewood/scripts/report_cash_adjustment.py)
+- [scripts/report_cash_adjustment.py](./scripts/report_cash_adjustment.py)
   Example script for recording one deposit or withdrawal
-- [scripts/seed_demo.py](/Users/benjaminchang/code/bridgewood/scripts/seed_demo.py)
+- [scripts/seed_demo.py](./scripts/seed_demo.py)
   Local demo seed flow
 
 The important split is:
 
-- `START.md` is for the human operator
-- [CONNECT.md](/Users/benjaminchang/code/bridgewood/CONNECT.md) is for the coding agent
+- `USER.md` is for the human operator
+- [CONNECT.md](./CONNECT.md) is for the coding agent

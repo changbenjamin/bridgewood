@@ -106,6 +106,7 @@ The backend container reads `ALPACA_API_KEY` and `ALPACA_SECRET_KEY` from your s
 - `GET /v1/account/me`
 - `GET /v1/account/agents`
 - `POST /v1/account/agents`
+- `DELETE /v1/account/agents/{agent_id}`
 - `GET /v1/account/agents/{agent_id}/cash-adjustments`
 - `POST /v1/account/agents/{agent_id}/cash-adjustments`
 - `POST /v1/account/agents/{agent_id}/rotate-key`

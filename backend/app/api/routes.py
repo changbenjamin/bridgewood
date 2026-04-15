@@ -731,6 +731,27 @@ async def rename_account_agent(
     return _build_account_agent_summary(agent)
 
 
+@router.delete("/account/agents/{agent_id}", response_model=AccountAgentSummary)
+async def delete_account_agent(
+    agent_id: str,
+    request: Request,
+    account: User = Depends(get_current_account_user),
+    db: Session = Depends(get_db),
+) -> AccountAgentSummary:
+    agent = _agent_for_account(db, account=account, agent_id=agent_id)
+    deleted_summary = _build_account_agent_summary(agent)
+
+    db.execute(delete(CashAdjustment).where(CashAdjustment.agent_id == agent.id))
+    db.execute(delete(Execution).where(Execution.agent_id == agent.id))
+    db.execute(delete(Position).where(Position.agent_id == agent.id))
+    db.execute(delete(PortfolioSnapshot).where(PortfolioSnapshot.agent_id == agent.id))
+    db.delete(agent)
+    db.commit()
+
+    await _broadcast_cached_leaderboard(request, db)
+    return deleted_summary
+
+
 @router.get(
     "/account/agents/{agent_id}/cash-adjustments",
     response_model=list[CashAdjustmentItem],
