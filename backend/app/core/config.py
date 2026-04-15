@@ -22,21 +22,23 @@ class Settings(BaseSettings):
             "http://127.0.0.1:5173",
         ]
     )
-    admin_token: str = "bridgewood-admin-token"
-    fernet_key: str = "p63UvtXx1b9s_9g9qxGzbXClSH6sF8RClbQfmykUKQ8="
-    mock_broker_mode: bool = True
     price_refresh_seconds: int = 15
-    snapshot_interval_minutes: int = 5
-    order_fill_timeout_seconds: int = 20
-    order_fill_poll_seconds: float = 1.0
-    alpaca_paper_trading_url: str = "https://paper-api.alpaca.markets"
-    alpaca_live_trading_url: str = "https://api.alpaca.markets"
+    snapshot_interval_minutes: int = 2
+    alpaca_api_key: str | None = None
+    alpaca_secret_key: str | None = None
     alpaca_data_url: str = "https://data.alpaca.markets"
-    alpaca_sandbox_data_url: str = "https://data.sandbox.alpaca.markets"
     alpaca_equity_feed: str = "iex"
     benchmark_symbol: str = "SPY"
     benchmark_starting_cash: float = 10000.0
     activity_page_size: int = 30
+    execution_page_size: int = 50
+    max_page_size: int = 100
+    signup_rate_limit: int = 5
+    signup_rate_limit_window_seconds: int = 60
+    agent_create_rate_limit: int = 10
+    agent_create_rate_limit_window_seconds: int = 60
+    execution_report_rate_limit: int = 60
+    execution_report_rate_limit_window_seconds: int = 60
 
     @field_validator("cors_origins", mode="before")
     @classmethod

@@ -17,9 +17,10 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 from app.api.routes import router
+from app.core.errors import register_exception_handlers
 from app.db.session import Base, get_db
-from app.models.entities import Agent, User
-from app.services.security import encrypt_secret, generate_account_api_key, hash_api_key
+from app.models.entities import Agent, TradingMode, User
+from app.services.security import generate_account_api_key, hash_api_key
 
 
 class DummyConnectionManager:
@@ -33,9 +34,15 @@ class DummyConnectionManager:
 class DummyPriceFeedService:
     def __init__(self) -> None:
         self.prices: dict[str, Decimal] = {}
+        self.last_updated_at = None
 
     def snapshot(self) -> dict[str, Decimal]:
         return dict(self.prices)
+
+    async def refresh_symbols(self, symbols: list[str]) -> dict[str, Decimal]:
+        latest = {symbol: self.prices.get(symbol, Decimal("100.00")) for symbol in symbols}
+        self.prices.update(latest)
+        return latest
 
 
 class AccountAgentRenameTests(unittest.TestCase):
@@ -55,6 +62,7 @@ class AccountAgentRenameTests(unittest.TestCase):
 
         self.app = FastAPI()
         self.app.include_router(router, prefix="/v1")
+        register_exception_handlers(self.app)
         self.app.state.connection_manager = DummyConnectionManager()
         self.app.state.price_feed_service = DummyPriceFeedService()
 
@@ -82,13 +90,6 @@ class AccountAgentRenameTests(unittest.TestCase):
             username=f"{username}-{uuid4().hex[:8]}",
             account_api_key_hash=hash_api_key(account_api_key),
             account_api_key_prefix=account_api_key[:10],
-            alpaca_paper_api_key=encrypt_secret("paper-key"),
-            alpaca_paper_secret_key=encrypt_secret("paper-secret"),
-            alpaca_live_api_key=None,
-            alpaca_live_secret_key=None,
-            alpaca_api_key=encrypt_secret("paper-key"),
-            alpaca_secret_key=encrypt_secret("paper-secret"),
-            alpaca_base_url="https://paper-api.alpaca.markets",
         )
         with self.session_factory() as db:
             db.add(user)
@@ -103,8 +104,7 @@ class AccountAgentRenameTests(unittest.TestCase):
             api_key_hash=hash_api_key(f"agent-{uuid4()}"),
             api_key_prefix=f"agent-{uuid4().hex[:4]}",
             starting_cash=Decimal("10000"),
-            real_money=False,
-            is_paper=True,
+            trading_mode=TradingMode.PAPER,
         )
         with self.session_factory() as db:
             db.add(agent)
@@ -171,7 +171,7 @@ class AccountAgentRenameTests(unittest.TestCase):
         self.assertEqual(response.json()["detail"], "Agent not found.")
         self.assertEqual(self.app.state.connection_manager.payloads, [])
 
-    def test_rename_agent_returns_403_for_other_accounts_agent(self) -> None:
+    def test_rename_agent_returns_404_for_other_accounts_agent(self) -> None:
         owner, owner_api_key = self._create_user("owner")
         other_user, _ = self._create_user("other")
         agent = self._create_agent(other_user.id)
@@ -182,10 +182,8 @@ class AccountAgentRenameTests(unittest.TestCase):
             json={"name": "Renamed Agent"},
         )
 
-        self.assertEqual(response.status_code, 403)
-        self.assertEqual(
-            response.json()["detail"], "You do not have access to this agent."
-        )
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.json()["detail"], "Agent not found.")
         with self.session_factory() as db:
             unchanged = db.get(Agent, agent.id)
             assert unchanged is not None

@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta
+import logging
+from datetime import datetime, time, timedelta
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 
-from app.core.config import get_settings
+from app.core.time import utc_now
 from app.models.entities import (
     Agent,
     BenchmarkSnapshot,
@@ -17,16 +18,10 @@ from app.models.entities import (
 from app.services.portfolio_engine import build_portfolio
 
 
-settings = get_settings()
-
-
-def is_market_hours(now: datetime | None = None) -> bool:
-    current = (now or datetime.utcnow()).astimezone(ZoneInfo("America/New_York"))
-    if current.weekday() >= 5:
-        return False
-    opening = current.replace(hour=9, minute=30, second=0, microsecond=0)
-    closing = current.replace(hour=16, minute=0, second=0, microsecond=0)
-    return opening <= current <= closing
+logger = logging.getLogger(__name__)
+EASTERN_TZ = ZoneInfo("America/New_York")
+MARKET_OPEN = time(hour=9, minute=30)
+MARKET_CLOSE = time(hour=16, minute=0)
 
 
 class SnapshotWorker:
@@ -38,6 +33,9 @@ class SnapshotWorker:
         self.interval_minutes = interval_minutes
         self._task: asyncio.Task | None = None
         self._last_slot: datetime | None = None
+        self.last_success_at: datetime | None = None
+        self.last_error_at: datetime | None = None
+        self.last_error_message: str | None = None
 
     def start(self) -> None:
         if self._task is None:
@@ -51,30 +49,53 @@ class SnapshotWorker:
             except asyncio.CancelledError:
                 pass
 
+    def health_summary(self) -> dict[str, object]:
+        return {
+            "healthy": self.last_error_at is None,
+            "last_success_at": self.last_success_at,
+            "last_error_at": self.last_error_at,
+            "last_error_message": self.last_error_message,
+        }
+
+    def _is_market_hours(self, moment: datetime) -> bool:
+        eastern = moment.astimezone(EASTERN_TZ)
+        if eastern.weekday() >= 5:
+            return False
+        current_time = eastern.time()
+        return MARKET_OPEN <= current_time <= MARKET_CLOSE
+
     async def run(self) -> None:
         while True:
             try:
                 await self.maybe_snapshot()
-            except Exception:
-                pass
+            except Exception as exc:  # pragma: no cover - background safety
+                self.last_error_at = utc_now()
+                self.last_error_message = str(exc)
+                logger.exception("Snapshot worker failed.", exc_info=exc)
             await asyncio.sleep(30)
 
     async def maybe_snapshot(self) -> None:
-        now = datetime.utcnow().replace(second=0, microsecond=0)
+        now = utc_now().replace(second=0, microsecond=0)
+        if not self._is_market_hours(now):
+            return
+
         slot = now - timedelta(minutes=now.minute % self.interval_minutes)
-        should_capture = settings.mock_broker_mode or is_market_hours(now)
-        if not should_capture or self._last_slot == slot:
+        if self._last_slot == slot:
             return
 
         if not self.price_feed_service.snapshot():
             await self.price_feed_service.refresh_once()
 
         prices = self.price_feed_service.snapshot()
+        captured = False
+
         with self.session_factory() as db:
             for agent in db.scalars(
-                select(Agent).order_by(Agent.created_at.asc())
+                select(Agent)
+                .where(Agent.is_active.is_(True))
+                .order_by(Agent.created_at.asc())
             ).all():
-                portfolio = build_portfolio(db, agent, prices)
+                portfolio = build_portfolio(db, agent, prices, as_of=slot)
                 db.add(
                     PortfolioSnapshot(
                         agent_id=agent.id,
@@ -85,6 +106,7 @@ class SnapshotWorker:
                         snapshot_at=slot,
                     )
                 )
+                captured = True
 
             benchmark_state = db.get(BenchmarkState, 1)
             if benchmark_state and benchmark_state.symbol in prices:
@@ -105,6 +127,13 @@ class SnapshotWorker:
                         snapshot_at=slot,
                     )
                 )
+                captured = True
 
-            db.commit()
-        self._last_slot = slot
+            if captured:
+                db.commit()
+
+        if captured:
+            self._last_slot = slot
+            self.last_success_at = utc_now()
+            self.last_error_at = None
+            self.last_error_message = None

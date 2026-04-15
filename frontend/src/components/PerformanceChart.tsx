@@ -9,22 +9,39 @@ import {
   YAxis,
 } from "recharts";
 
-import {
-  formatAxisCurrency,
-  formatCurrency,
-  formatDateTime,
-} from "../lib/format";
+import { formatAxisPct, formatDateTime, formatSignedPct } from "../lib/format";
 import { colorForAgent } from "../lib/palette";
-import type { LeaderboardEntry, SnapshotPoint } from "../types";
+import type { LeaderboardEntry, RangeKey, SnapshotPoint } from "../types";
 
 interface Props {
   snapshots: SnapshotPoint[];
   agents: LeaderboardEntry[];
   hiddenIds: string[];
+  range: RangeKey;
 }
 
+interface ChartRow {
+  timestamp: string;
+  ts: number;
+  [agentId: string]: number | string;
+}
+
+const hourlyTickFormatter = new Intl.DateTimeFormat("en-US", {
+  hour: "numeric",
+  hour12: true,
+});
+
+const dailyTickFormatter = new Intl.DateTimeFormat("en-US", {
+  month: "short",
+  day: "numeric",
+});
+
+const monthlyTickFormatter = new Intl.DateTimeFormat("en-US", {
+  month: "short",
+});
+
 function buildRows(points: SnapshotPoint[]) {
-  const grouped = new Map<string, Record<string, number | string>>();
+  const grouped = new Map<string, ChartRow>();
 
   for (const point of [...points].sort(
     (left, right) =>
@@ -32,91 +49,236 @@ function buildRows(points: SnapshotPoint[]) {
       new Date(right.snapshot_at).getTime(),
   )) {
     const key = point.snapshot_at;
-    const row = grouped.get(key) ?? { timestamp: key };
-    row[point.agent_id] = point.total_value;
+    const row = grouped.get(key) ?? {
+      timestamp: key,
+      ts: new Date(key).getTime(),
+    };
+    row[point.agent_id] = point.return_pct;
     grouped.set(key, row);
   }
 
-  return Array.from(grouped.values());
+  const rows = Array.from(grouped.values()).sort(
+    (left, right) => left.ts - right.ts,
+  );
+  if (rows.length < 2) {
+    return rows;
+  }
+
+  const expanded: ChartRow[] = [];
+  const minuteMs = 60_000;
+  const latestValues: Record<string, number> = {};
+
+  rows.forEach((row, index) => {
+    Object.entries(row).forEach(([key, value]) => {
+      if (key !== "timestamp" && key !== "ts" && typeof value === "number") {
+        latestValues[key] = value;
+      }
+    });
+
+    expanded.push({ ...row });
+
+    const next = rows[index + 1];
+    if (!next) {
+      return;
+    }
+
+    for (let ts = row.ts + minuteMs; ts < next.ts; ts += minuteMs) {
+      expanded.push({
+        timestamp: new Date(ts).toISOString(),
+        ts,
+        ...latestValues,
+      });
+    }
+  });
+
+  return expanded;
 }
 
-export function PerformanceChart({ snapshots, agents, hiddenIds }: Props) {
+function getReturnDomain(
+  rows: ChartRow[],
+  visibleAgents: LeaderboardEntry[],
+): [number, number] {
+  let maxAbsReturn = 0;
+
+  rows.forEach((row) => {
+    visibleAgents.forEach((agent) => {
+      const value = row[agent.id];
+      if (typeof value === "number") {
+        maxAbsReturn = Math.max(maxAbsReturn, Math.abs(value));
+      }
+    });
+  });
+
+  const padded = Math.max(1, maxAbsReturn * 1.15);
+  return [-padded, padded];
+}
+
+function alignToHour(timestamp: number) {
+  const date = new Date(timestamp);
+  date.setMinutes(0, 0, 0);
+  return date.getTime();
+}
+
+function alignToDay(timestamp: number) {
+  const date = new Date(timestamp);
+  date.setHours(0, 0, 0, 0);
+  return date.getTime();
+}
+
+function alignToMonth(timestamp: number) {
+  const date = new Date(timestamp);
+  date.setDate(1);
+  date.setHours(0, 0, 0, 0);
+  return date.getTime();
+}
+
+function buildTicks(range: RangeKey, rows: ChartRow[]) {
+  if (rows.length === 0) {
+    return undefined;
+  }
+
+  const min = rows[0].ts;
+  const max = rows[rows.length - 1].ts;
+
+  if (min === max) {
+    return [min];
+  }
+
+  const ticks: number[] = [];
+
+  if (range === "1D") {
+    for (let tick = alignToHour(min); tick <= max; tick += 60 * 60 * 1000) {
+      if (tick >= min) {
+        ticks.push(tick);
+      }
+    }
+  } else if (range === "1W") {
+    for (let tick = alignToDay(min); tick <= max; tick += 24 * 60 * 60 * 1000) {
+      if (tick >= min) {
+        ticks.push(tick);
+      }
+    }
+  } else if (range === "1M") {
+    for (
+      let tick = alignToDay(min);
+      tick <= max;
+      tick += 3 * 24 * 60 * 60 * 1000
+    ) {
+      if (tick >= min) {
+        ticks.push(tick);
+      }
+    }
+  } else {
+    for (
+      let tick = alignToMonth(min);
+      tick <= max;
+      tick = new Date(tick).setMonth(new Date(tick).getMonth() + 1)
+    ) {
+      if (tick >= min) {
+        ticks.push(tick);
+      }
+    }
+  }
+
+  const deduped = Array.from(new Set(ticks)).sort(
+    (left, right) => left - right,
+  );
+  if (deduped.length === 0) {
+    return [min];
+  }
+  return deduped;
+}
+
+function formatXAxisTick(value: number, range: RangeKey) {
+  const date = new Date(value);
+
+  if (range === "1D") {
+    return hourlyTickFormatter.format(date).toUpperCase();
+  }
+
+  if (range === "ALL") {
+    return monthlyTickFormatter.format(date).toUpperCase();
+  }
+
+  return dailyTickFormatter.format(date).toUpperCase();
+}
+
+export function PerformanceChart({
+  snapshots,
+  agents,
+  hiddenIds,
+  range,
+}: Props) {
   const rows = buildRows(snapshots);
   const visibleAgents = agents.filter((agent) => !hiddenIds.includes(agent.id));
   const hasCompetitors = agents.some((agent) => !agent.is_benchmark);
   const showSinglePoint = rows.length < 2;
+  const [minReturn, maxReturn] = getReturnDomain(rows, visibleAgents);
+  const ticks = buildTicks(range, rows);
 
   return (
-    <div className="rounded-2xl border border-stone-200 bg-white p-5 shadow-[0_16px_40px_rgba(15,23,42,0.06)] md:p-6">
-      <div className="mb-5">
-        <div className="space-y-1.5">
-          <h2 className="text-[2rem] font-semibold tracking-[-0.04em] text-stone-900">
-            Performance History
-          </h2>
-          <p className="max-w-3xl text-sm text-stone-500">
-            * Entries with asterisks are paper-trading accounts. The S&amp;P 500
-            line uses SPY as the proxy benchmark.
-          </p>
-        </div>
-      </div>
-
-      <div className="h-[360px] min-w-0">
+    <div>
+      <div className="h-[420px] min-w-0 md:h-[500px]">
         <ResponsiveContainer width="100%" height="100%">
           <LineChart
             data={rows}
-            margin={{ top: 12, right: 24, bottom: 0, left: 0 }}
+            margin={{ top: 16, right: 20, bottom: 4, left: 0 }}
           >
-            <CartesianGrid stroke="#ede7dd" vertical={false} />
-            <ReferenceLine
-              y={10000}
-              stroke="#a8a29e"
-              strokeDasharray="6 6"
-              label={{
-                value: "$10K starting cash",
-                position: "insideBottomRight",
-                fill: "#a8a29e",
-                fontSize: 12,
-              }}
+            <CartesianGrid
+              stroke="#ded7cc"
+              strokeDasharray="2 6"
+              vertical={false}
             />
+            <ReferenceLine y={0} stroke="#5b6474" strokeDasharray="4 6" />
             <XAxis
-              dataKey="timestamp"
+              dataKey="ts"
+              type="number"
+              scale="time"
+              domain={["dataMin", "dataMax"]}
+              ticks={ticks}
               axisLine={false}
               tickLine={false}
-              tick={{ fill: "#78716c", fontSize: 12 }}
-              tickFormatter={(value) => formatDateTime(String(value))}
-              minTickGap={24}
+              tick={{ fill: "#8d8678", fontSize: 12 }}
+              tickFormatter={(value) => formatXAxisTick(Number(value), range)}
+              minTickGap={26}
+              tickMargin={14}
             />
             <YAxis
               axisLine={false}
               tickLine={false}
-              tick={{ fill: "#78716c", fontSize: 12 }}
-              tickFormatter={(value) => formatAxisCurrency(Number(value))}
-              width={84}
+              tick={{ fill: "#8d8678", fontSize: 12 }}
+              tickFormatter={(value) => formatAxisPct(Number(value))}
+              domain={[minReturn, maxReturn]}
+              width={76}
+              tickMargin={14}
             />
             <Tooltip
               contentStyle={{
-                background: "#ffffff",
-                borderRadius: 16,
-                border: "1px solid #e7e5e4",
-                boxShadow: "0 16px 36px rgba(15, 23, 42, 0.1)",
+                background: "#fffdf9",
+                borderRadius: 6,
+                border: "1px solid #d8d0c2",
+                boxShadow: "0 10px 24px rgba(28, 25, 23, 0.08)",
               }}
               formatter={(value, name) => [
-                formatCurrency(Number(value ?? 0)),
+                formatSignedPct(Number(value ?? 0)),
                 String(name),
               ]}
-              labelFormatter={(label) => formatDateTime(String(label))}
+              labelFormatter={(label) =>
+                formatDateTime(new Date(Number(label)).toISOString())
+              }
             />
             {visibleAgents.map((agent) => (
               <Line
                 key={agent.id}
-                type="monotone"
+                type="stepAfter"
                 dataKey={agent.id}
                 name={agent.name}
                 stroke={colorForAgent(agent.id, agent.is_benchmark)}
-                strokeWidth={agent.is_benchmark ? 2.5 : 2.8}
+                strokeWidth={agent.is_benchmark ? 2.2 : 2.6}
                 dot={showSinglePoint ? { r: 4, strokeWidth: 0 } : false}
                 activeDot={{ r: 4, strokeWidth: 0 }}
                 connectNulls
+                strokeLinecap="round"
               />
             ))}
           </LineChart>
@@ -124,14 +286,14 @@ export function PerformanceChart({ snapshots, agents, hiddenIds }: Props) {
       </div>
 
       {showSinglePoint && (
-        <div className="mt-4 text-sm text-stone-500">
-          The chart will fill in as additional snapshots are captured throughout
-          the session.
+        <div className="mt-3 text-sm text-stone-500">
+          Additional marks will appear as new snapshots are recorded during the
+          session.
         </div>
       )}
 
       {!hasCompetitors && (
-        <div className="mt-4 rounded-xl border border-sky-100 bg-sky-50 px-4 py-3 text-sm text-sky-900">
+        <div className="mt-3 border border-sky-200/70 bg-sky-50/60 px-4 py-3 text-sm text-sky-900">
           No agents have been registered yet.
         </div>
       )}

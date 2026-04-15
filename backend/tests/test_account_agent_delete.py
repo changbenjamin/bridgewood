@@ -18,19 +18,20 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 from app.api.routes import router
+from app.core.errors import register_exception_handlers
 from app.db.session import Base, get_db
 from app.models.entities import (
-    ActivityEventType,
-    ActivityLog,
     Agent,
+    CashAdjustment,
+    CashAdjustmentKind,
+    Execution,
+    ExecutionSide,
     PortfolioSnapshot,
     Position,
-    Trade,
-    TradeSide,
-    TradeStatus,
+    TradingMode,
     User,
 )
-from app.services.security import encrypt_secret, generate_account_api_key, hash_api_key
+from app.services.security import generate_account_api_key, hash_api_key
 
 
 class DummyConnectionManager:
@@ -44,9 +45,15 @@ class DummyConnectionManager:
 class DummyPriceFeedService:
     def __init__(self) -> None:
         self.prices: dict[str, Decimal] = {}
+        self.last_updated_at = None
 
     def snapshot(self) -> dict[str, Decimal]:
         return dict(self.prices)
+
+    async def refresh_symbols(self, symbols: list[str]) -> dict[str, Decimal]:
+        latest = {symbol: self.prices.get(symbol, Decimal("100.00")) for symbol in symbols}
+        self.prices.update(latest)
+        return latest
 
 
 class AccountAgentDeleteTests(unittest.TestCase):
@@ -66,6 +73,7 @@ class AccountAgentDeleteTests(unittest.TestCase):
 
         self.app = FastAPI()
         self.app.include_router(router, prefix="/v1")
+        register_exception_handlers(self.app)
         self.app.state.connection_manager = DummyConnectionManager()
         self.app.state.price_feed_service = DummyPriceFeedService()
 
@@ -93,13 +101,6 @@ class AccountAgentDeleteTests(unittest.TestCase):
             username=f"{username}-{uuid4().hex[:8]}",
             account_api_key_hash=hash_api_key(account_api_key),
             account_api_key_prefix=account_api_key[:10],
-            alpaca_paper_api_key=encrypt_secret("paper-key"),
-            alpaca_paper_secret_key=encrypt_secret("paper-secret"),
-            alpaca_live_api_key=None,
-            alpaca_live_secret_key=None,
-            alpaca_api_key=encrypt_secret("paper-key"),
-            alpaca_secret_key=encrypt_secret("paper-secret"),
-            alpaca_base_url="https://paper-api.alpaca.markets",
         )
         with self.session_factory() as db:
             db.add(user)
@@ -114,8 +115,7 @@ class AccountAgentDeleteTests(unittest.TestCase):
             api_key_hash=hash_api_key(f"agent-{uuid4()}"),
             api_key_prefix=f"agent-{uuid4().hex[:4]}",
             starting_cash=Decimal("10000"),
-            real_money=False,
-            is_paper=True,
+            trading_mode=TradingMode.PAPER,
         )
         with self.session_factory() as db:
             db.add(agent)
@@ -134,20 +134,16 @@ class AccountAgentDeleteTests(unittest.TestCase):
                 )
             )
             db.add(
-                Trade(
+                Execution(
                     agent_id=agent_id,
+                    external_order_id=f"order-{uuid4().hex}",
                     symbol="AAPL",
-                    side=TradeSide.BUY,
-                    amount_dollars=Decimal("187.50"),
+                    side=ExecutionSide.BUY,
                     quantity=Decimal("1.25"),
                     price_per_share=Decimal("150.00"),
-                    filled_total=Decimal("187.50"),
-                    realized_pnl=None,
-                    alpaca_order_id="alpaca-123",
-                    client_order_id=f"client-{uuid4().hex}",
-                    rationale="Initial buy",
-                    status=TradeStatus.FILLED,
-                    rejection_reason=None,
+                    gross_notional=Decimal("187.50"),
+                    fees=Decimal("0"),
+                    realized_pnl=Decimal("0"),
                     executed_at=datetime.utcnow(),
                 )
             )
@@ -162,12 +158,12 @@ class AccountAgentDeleteTests(unittest.TestCase):
                 )
             )
             db.add(
-                ActivityLog(
+                CashAdjustment(
                     agent_id=agent_id,
-                    event_type=ActivityEventType.CYCLE_SUMMARY,
-                    summary="Closed the opening trade.",
-                    metadata_json={"symbol": "AAPL"},
-                    cost_tokens=Decimal("12.5"),
+                    kind=CashAdjustmentKind.DEPOSIT,
+                    amount=Decimal("50.00"),
+                    note="Top-up",
+                    effective_at=datetime.utcnow(),
                 )
             )
             db.commit()
@@ -192,7 +188,7 @@ class AccountAgentDeleteTests(unittest.TestCase):
             self.assertIsNotNone(db.get(Agent, surviving_agent.id))
             self.assertEqual(
                 db.scalar(
-                    select(Trade).where(Trade.agent_id == doomed_agent.id).limit(1)
+                    select(Execution).where(Execution.agent_id == doomed_agent.id).limit(1)
                 ),
                 None,
             )
@@ -214,8 +210,8 @@ class AccountAgentDeleteTests(unittest.TestCase):
             )
             self.assertEqual(
                 db.scalar(
-                    select(ActivityLog)
-                    .where(ActivityLog.agent_id == doomed_agent.id)
+                    select(CashAdjustment)
+                    .where(CashAdjustment.agent_id == doomed_agent.id)
                     .limit(1)
                 ),
                 None,
@@ -241,7 +237,7 @@ class AccountAgentDeleteTests(unittest.TestCase):
         self.assertEqual(response.json()["detail"], "Agent not found.")
         self.assertEqual(self.app.state.connection_manager.payloads, [])
 
-    def test_delete_agent_returns_403_for_other_accounts_agent(self) -> None:
+    def test_delete_agent_returns_404_for_other_accounts_agent(self) -> None:
         owner, owner_api_key = self._create_user("owner")
         other_user, _ = self._create_user("other")
         other_agent = self._create_agent(other_user.id, name="Do Not Touch")
@@ -252,15 +248,15 @@ class AccountAgentDeleteTests(unittest.TestCase):
             headers=self._account_headers(owner_api_key),
         )
 
-        self.assertEqual(response.status_code, 403)
-        self.assertEqual(
-            response.json()["detail"], "You do not have access to this agent."
-        )
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.json()["detail"], "Agent not found.")
 
         with self.session_factory() as db:
             self.assertIsNotNone(db.get(Agent, other_agent.id))
             self.assertIsNotNone(
-                db.scalar(select(Trade).where(Trade.agent_id == other_agent.id).limit(1))
+                db.scalar(
+                    select(Execution).where(Execution.agent_id == other_agent.id).limit(1)
+                )
             )
 
         self.assertEqual(self.app.state.connection_manager.payloads, [])
