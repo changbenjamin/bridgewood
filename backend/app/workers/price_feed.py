@@ -92,7 +92,7 @@ class PriceFeedService:
                 healthy = False
 
         return {
-            "configured": True,
+            "configured": alpaca_configured,
             "alpaca_configured": alpaca_configured,
             "healthy": healthy,
             "provider": self.last_provider,

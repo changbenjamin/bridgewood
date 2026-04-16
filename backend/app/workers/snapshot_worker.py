@@ -8,7 +8,7 @@ from decimal import Decimal
 from sqlalchemy import select
 
 from app.core.time import utc_now
-from app.models.entities import Agent, BenchmarkState
+from app.models.entities import Agent, BenchmarkState, Position
 from app.services.portfolio_engine import build_portfolio
 from app.services.snapshot_store import (
     store_benchmark_snapshot,
@@ -62,19 +62,36 @@ class SnapshotWorker:
                 logger.exception("Snapshot worker failed.", exc_info=exc)
             await asyncio.sleep(30)
 
+    def _tracked_symbols(self, db) -> list[str]:
+        symbols = {
+            symbol
+            for symbol in db.scalars(
+                select(Position.symbol)
+                .join(Agent, Agent.id == Position.agent_id)
+                .where(Agent.is_active.is_(True))
+            ).all()
+        }
+        benchmark_state = db.get(BenchmarkState, 1)
+        if benchmark_state is not None:
+            symbols.add(benchmark_state.symbol)
+        return sorted(symbols)
+
     async def maybe_snapshot(self) -> None:
         now = utc_now().replace(second=0, microsecond=0)
         slot = now - timedelta(minutes=now.minute % self.interval_minutes)
         if self._last_slot == slot:
             return
-
-        if not self.price_feed_service.snapshot():
-            await self.price_feed_service.refresh_once()
-
-        prices = self.price_feed_service.snapshot()
         captured = False
 
         with self.session_factory() as db:
+            tracked_symbols = self._tracked_symbols(db)
+            if tracked_symbols:
+                await self.price_feed_service.refresh_symbols(tracked_symbols)
+            elif not self.price_feed_service.snapshot():
+                await self.price_feed_service.refresh_once()
+
+            prices = self.price_feed_service.snapshot()
+
             for agent in db.scalars(
                 select(Agent)
                 .where(Agent.is_active.is_(True))

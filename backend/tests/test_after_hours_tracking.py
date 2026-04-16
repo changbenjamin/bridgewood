@@ -37,6 +37,7 @@ class DummyPriceFeedService:
     def __init__(self, prices: dict[str, Decimal]) -> None:
         self.prices = dict(prices)
         self.refresh_once = AsyncMock()
+        self.refresh_symbols = AsyncMock()
 
     def snapshot(self) -> dict[str, Decimal]:
         return dict(self.prices)
@@ -272,6 +273,7 @@ class AfterHoursSnapshotWorkerTests(unittest.TestCase):
         self.assertEqual(float(portfolio_snapshots[0].total_value), 10025.0)
         self.assertEqual(len(benchmark_snapshots), 1)
         self.assertEqual(float(benchmark_snapshots[0].total_value), 10100.0)
+        price_feed_service.refresh_symbols.assert_awaited_once_with(["AAPL", "SPY"])
         price_feed_service.refresh_once.assert_not_awaited()
 
     def _run_async(self, coroutine) -> None:
